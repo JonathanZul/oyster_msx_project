@@ -1,0 +1,16 @@
+# Core Libraries
+ultralytics
+torch
+torchvision
+
+# Data Handling & Image Processing
+tifffile
+numpy
+opencv-python
+
+# Utilities & File I/O
+pyyaml
+geojson
+shapely
+pandas
+tqdm # For progress bars
