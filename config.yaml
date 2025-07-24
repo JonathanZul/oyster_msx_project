@@ -1,0 +1,77 @@
+# ===================================================================
+#               MASTER CONFIGURATION FOR MSX PROJECT
+# ===================================================================
+
+# 1. Project Paths
+# Define all the major input and output paths for the project.
+# -------------------------------------------------------------------
+paths:
+  # Input data
+  raw_wsis: "data/raw/wsis/"
+  qupath_exports: "data/interim/qupath_exports/"
+
+  # Oyster instance masks
+  oyster_masks: "data/interim/oyster_masks/"
+
+  # Processed dataset for YOLO
+  yolo_dataset: "data/processed/yolo_dataset/"
+
+  # Model training outputs
+  model_output_dir: "models/"
+
+  # Inference and post-processing outputs
+  inference_results: "outputs/inference_results/"
+  qupath_imports: "outputs/qupath_imports/"
+
+  # Logging directory
+  logs: "logs/"
+
+# 2. Dataset Creation Parameters
+# Parameters controlling the `01_create_dataset.py` script.
+# -------------------------------------------------------------------
+dataset_creation:
+  patch_size: 640 # The size of square patches (in pixels) to create.
+  train_val_split: 0.8 # 80% for training, 20% for validation.
+  classes:
+    "MSX Plasmodium": 0
+    "Potential Confuser": 1
+
+# 3. Training Parameters
+# Parameters controlling the `02_train_yolo.py` script.
+# -------------------------------------------------------------------
+training:
+  yolo_model: "yolov8n.pt" # The pre-trained model to start from.
+  epochs: 100
+  batch_size: 16
+  device: "mps" # Options: "cpu", "cuda:0", "mps" (for Apple Silicon)
+  img_size: 640 # Image size for training, should match patch_size.
+
+# 4. Inference Parameters
+# Parameters controlling the `03_run_inference.py` script.
+# -------------------------------------------------------------------
+inference:
+  model_checkpoint: "models/best.pt" # The path to your best trained model.
+  patch_overlap: 0.2 # 20% overlap when creating patches for inference.
+  conf_threshold: 0.25 # Confidence threshold for predictions.
+
+# 5. Oyster Segmentation Parameters (NEW SECTION)
+# Parameters controlling the `00_segment_oysters.py` script.
+# -------------------------------------------------------------------
+oyster_segmentation:
+  # Processing parameters
+  processing_downsample: 32.0
+  num_oysters_to_detect: 2
+
+  # Image pre-processing parameters for tissue detection
+  gaussian_blur_kernel: [3, 3]
+  adaptive_thresh_block_size: 11
+  adaptive_thresh_c: 2
+  morph_close_kernel: [5, 5]
+  morph_close_iter: 3
+  morph_open_kernel: [3, 3]
+  morph_open_iter: 2
+  min_contour_area_percent: 0.01
+
+  # Debugging
+  save_debug_images: true
+  debug_img_max_dim: 1024
