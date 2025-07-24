@@ -1,0 +1,28 @@
+# --- .gitignore for the Oyster MSX Project ---
+
+# 1. Python & Environment
+.venv/
+__pycache__/
+*.pyc
+
+# 2. Data Files
+data/raw/
+data/interim/
+data/processed/
+
+# 3. Models
+# Trained model weights are large binary files and should not be tracked.
+# The README should link to where pre-trained models can be downloaded if shared.
+models/
+*.pt
+*.pth
+
+# 4. Outputs & Logs
+outputs/
+logs/
+
+# 5. IDE & OS-specific files
+.DS_Store
+.vscode/
+.idea/
+*.ipynb_checkpoints
