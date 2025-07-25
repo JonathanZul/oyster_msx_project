@@ -2,6 +2,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import time
+import yaml
 
 
 def setup_logging(log_dir="logs", script_name="script"):
@@ -51,3 +52,27 @@ def setup_logging(log_dir="logs", script_name="script"):
     logger.addHandler(file_handler)
 
     return logger
+
+def log_config(config: dict, logger: logging.Logger):
+    """
+    Logs the entire project configuration for reproducibility.
+
+    This function takes the configuration dictionary, formats it into a
+    readable multi-line string using YAML syntax, and logs it. This
+    ensures that every log file contains the exact parameters used for that run.
+
+    Args:
+        config (dict): The project's configuration dictionary.
+        logger (logging.Logger): The logger instance to use.
+    """
+    # Use yaml.dump to create a nicely formatted string of the config
+    config_str = yaml.dump(config, indent=4, default_flow_style=False)
+
+    # Create a formatted message
+    log_message = (
+        "\n----------------- PROJECT CONFIGURATION -----------------\n"
+        f"{config_str}"
+        "-----------------------------------------------------------\n"
+    )
+
+    logger.info(log_message)

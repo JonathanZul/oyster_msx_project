@@ -67,10 +67,18 @@ oyster_segmentation:
   adaptive_thresh_block_size: 11
   adaptive_thresh_c: 2
   morph_close_kernel: [5, 5]
-  morph_close_iter: 3
+  morph_close_iter: 2
   morph_open_kernel: [3, 3]
   morph_open_iter: 2
   min_contour_area_percent: 0.01
+
+  # Watrershed separation parameters
+  use_watershed_separation: true
+  watershed_erosion_iterations: 6
+
+  # Robust Fragment Merging
+  enable_fragment_merging: true
+  min_fragment_area_percent: 0.001 # Fragments smaller than this % of the image will be discarded as noise
 
   # Debugging
   save_debug_images: true
