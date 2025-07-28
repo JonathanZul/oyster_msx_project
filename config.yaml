@@ -44,6 +44,7 @@ training:
   epochs: 100
   batch_size: 16
   device: "mps" # Options: "cpu", "cuda:0", "mps" (for Apple Silicon)
+  # NOTE: if running using mps use `PYTORCH_ENABLE_MPS_FALLBACK=1 python3 -m src.main_scripts.02_train_yolo` to prevent 'torchvision:nms' not implemented for MPS error
   img_size: 640 # Image size for training, should match patch_size.
 
 # 4. Inference Parameters

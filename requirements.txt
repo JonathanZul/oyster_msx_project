@@ -5,7 +5,7 @@ torchvision
 
 # Data Handling & Image Processing
 tifffile
-numpy
+numpy<2.0
 opencv-python
 
 # Utilities & File I/O
