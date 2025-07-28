@@ -13,4 +13,5 @@ pyyaml
 geojson
 shapely
 pandas
-tqdm # For progress bars
+tqdm 
+zarr

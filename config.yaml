@@ -33,8 +33,8 @@ dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
   train_val_split: 0.8 # 80% for training, 20% for validation.
   classes:
-    "MSX Plasmodium": 0
-    "Potential Confuser": 1
+    "MSX Plasmodia": 0
+    #"Potential Confuser": 1
 
 # 3. Training Parameters
 # Parameters controlling the `02_train_yolo.py` script.
