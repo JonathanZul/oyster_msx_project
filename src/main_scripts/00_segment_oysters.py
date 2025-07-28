@@ -145,7 +145,8 @@ def process_single_wsi(wsi_path, config, logger):
     watershed and fragment merging pipeline.
     """
     logger.info(f"--- Processing Image: {wsi_path.name} ---")
-    slide_output_dir = Path(config['paths']['oyster_masks']) / wsi_path.stem
+    clean_stem = wsi_path.stem.replace('.ome', '')
+    slide_output_dir = Path(config['paths']['oyster_masks']) / clean_stem
     slide_output_dir.mkdir(exist_ok=True, parents=True)
     logger.info(f"Masks will be saved to: {slide_output_dir}")
 
