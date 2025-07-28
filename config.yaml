@@ -7,21 +7,21 @@
 # -------------------------------------------------------------------
 paths:
   # Input data
-  raw_wsis: "data/raw/wsis/"
-  qupath_exports: "data/interim/qupath_exports/"
+  raw_wsis: '/Volumes/One Touch/MSX Project/data/raw/wsis'
+  qupath_exports: '/Volumes/One Touch/MSX Project/data/raw/qupath_exports'
 
   # Oyster instance masks
-  oyster_masks: "data/interim/oyster_masks/"
+  oyster_masks: '/Volumes/One Touch/MSX Project/data/interim/oyster_masks'
 
   # Processed dataset for YOLO
-  yolo_dataset: "data/processed/yolo_dataset/"
+  yolo_dataset: '/Volumes/One Touch/MSX Project/data/processed/yolo_dataset'
 
   # Model training outputs
   model_output_dir: "models/"
 
   # Inference and post-processing outputs
-  inference_results: "outputs/inference_results/"
-  qupath_imports: "outputs/qupath_imports/"
+  inference_results: '/Volumes/One Touch/MSX Project/outputs/inference_results'
+  qupath_imports: '/Volumes/One Touch/MSX Project/outputs/qupath_imports'
 
   # Logging directory
   logs: "logs/"
@@ -51,7 +51,7 @@ training:
 # Parameters controlling the `03_run_inference.py` script.
 # -------------------------------------------------------------------
 inference:
-  model_checkpoint: "models/best.pt" # The path to your best trained model.
+  model_checkpoint: "models/yolov8n_msx_oyster_run3/weights/best.pt" # The path to your best trained model.
   patch_overlap: 0.2 # 20% overlap when creating patches for inference.
   conf_threshold: 0.25 # Confidence threshold for predictions.
 
