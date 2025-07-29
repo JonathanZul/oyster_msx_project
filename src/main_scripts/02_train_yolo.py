@@ -1,11 +1,8 @@
-# src/main_scripts/02_train_yolo.py
-
 import os
 import yaml
 from pathlib import Path
 from ultralytics import YOLO
 
-# Import utility functions from our project
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
