@@ -261,11 +261,13 @@ def main():
 
     # Find all WSI files to process
     wsi_dir = Path(config["paths"]["raw_wsis"])
-    wsi_paths = (
-        list(wsi_dir.glob("*.tif"))
-        + list(wsi_dir.glob("*.tiff"))
-        + list(wsi_dir.glob("*.vsi"))
+    all_paths = (
+            list(wsi_dir.glob("*.tif")) +
+            list(wsi_dir.glob("*.tiff")) +
+            list(wsi_dir.glob("*.vsi"))
     )
+    # This list comprehension filters out any path whose name starts with '._'
+    wsi_paths = [p for p in all_paths if not p.name.startswith('._')]
 
     if not wsi_paths:
         logger.error(f"No WSI files found in '{wsi_dir}'. Exiting.")
