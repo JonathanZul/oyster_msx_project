@@ -1,6 +1,7 @@
 # src/main_scripts/04_format_predictions.py
 
 import os
+import argparse
 import glob
 import json
 import torch
@@ -152,7 +153,16 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
 
 def main():
     """Main function to orchestrate the prediction formatting process."""
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Stage 04: Format YOLO Predictions for QuPath")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the master configuration file."
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     if not config:
         return
 

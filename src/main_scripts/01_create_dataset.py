@@ -1,6 +1,7 @@
 # src/main_scripts/01_create_dataset.py
 
 import os
+import argparse
 import glob
 import json
 import random
@@ -214,8 +215,17 @@ def process_single_wsi(
 
 
 def main():
-    """Main function to orchestrate the dataset creation process."""
-    config = load_config()
+    """Main function to execute the dataset creation process."""
+    parser = argparse.ArgumentParser(description="Stage 01: Dataset Creation")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the master configuration file."
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     if not config:
         return
 

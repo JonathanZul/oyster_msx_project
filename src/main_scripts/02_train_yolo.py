@@ -1,4 +1,5 @@
 import os
+import argparse
 import yaml
 from pathlib import Path
 from ultralytics import YOLO
@@ -56,10 +57,18 @@ def create_yolo_dataset_config(config: dict, logger):
 
 def main():
     """
-    Main function to orchestrate the YOLO model training process.
+    Main function to execute the YOLO model training process.
     """
-    # Load configuration
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Stage 02: Train YOLO Model")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the master configuration file."
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     if not config:
         return
 

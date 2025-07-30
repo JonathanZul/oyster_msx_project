@@ -6,6 +6,7 @@ import tifffile
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import argparse
 
 # Import our standardized utilities
 from src.utils.file_handling import load_config
@@ -248,8 +249,17 @@ def process_single_wsi(wsi_path, config, logger):
         save_debug_image(viz_img, "99_final_segmentation", slide_output_dir, config)
 
 def main():
-    """Main function to orchestrate the oyster segmentation process."""
-    config = load_config()
+    """Main function to execute the oyster segmentation process."""
+    parser = argparse.ArgumentParser(description="Stage 00: Oyster Instance Segmentation")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the master configuration file."
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     if not config:
         return
 

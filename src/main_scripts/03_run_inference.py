@@ -1,4 +1,5 @@
 import os
+import argparse
 import torch
 import tifffile
 import zarr
@@ -92,9 +93,18 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
 
 def main():
     """
-    Main function to orchestrate the inference process.
+    Main function to execute the inference process.
     """
-    config = load_config()
+    parser = argparse.ArgumentParser(description="Stage 03: Run Inference on WSIs")
+    parser.add_argument(
+        "-c", "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to the master configuration file."
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
     if not config:
         return
 
