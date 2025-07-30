@@ -28,4 +28,4 @@ logs/
 *.ipynb_checkpoints
 
 # Alternate config files
-*_*.yml
+*_*.yaml
