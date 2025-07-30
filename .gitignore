@@ -29,3 +29,7 @@ logs/
 
 # Alternate config files
 *_*.yaml
+
+# Ignore bash scripts
+submission_scripts/
+run_*.sh
