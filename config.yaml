@@ -7,21 +7,21 @@
 # -------------------------------------------------------------------
 paths:
   # Input data
-  raw_wsis: '/Volumes/One Touch/MSX Project/data/raw/wsis'
-  qupath_exports: '/Volumes/One Touch/MSX Project/data/raw/qupath_exports'
+  raw_wsis: "/Volumes/One Touch/MSX Project/data/raw/wsis"
+  qupath_exports: "/Volumes/One Touch/MSX Project/data/raw/qupath_exports"
 
   # Oyster instance masks
-  oyster_masks: '/Volumes/One Touch/MSX Project/data/interim/oyster_masks'
+  oyster_masks: "/Volumes/One Touch/MSX Project/data/interim/oyster_masks"
 
   # Processed dataset for YOLO
-  yolo_dataset: '/Volumes/One Touch/MSX Project/data/processed/yolo_dataset'
+  yolo_dataset: "/Volumes/One Touch/MSX Project/data/processed/yolo_dataset"
 
   # Model training outputs
   model_output_dir: "models/"
 
   # Inference and post-processing outputs
-  inference_results: '/Volumes/One Touch/MSX Project/outputs/inference_results'
-  qupath_imports: '/Volumes/One Touch/MSX Project/outputs/qupath_imports'
+  inference_results: "/Volumes/One Touch/MSX Project/outputs/inference_results"
+  qupath_imports: "/Volumes/One Touch/MSX Project/outputs/qupath_imports"
 
   # Logging directory
   logs: "logs/"
@@ -34,7 +34,13 @@ dataset_creation:
   train_val_split: 0.8 # 80% for training, 20% for validation.
   classes:
     "MSX Plasmodia": 0
-    #"Potential Confuser": 1
+    "MSX Spores": 1
+    "Waste": 2
+    "Hemocyte": 3
+    "Ignore": 4
+    "Potential Confuser": 5
+    "Stain": 6
+    "?": 7
 
 # 3. Training Parameters
 # Parameters controlling the `02_train_yolo.py` script.
@@ -75,7 +81,7 @@ oyster_segmentation:
 
   # Watrershed separation parameters
   use_watershed_separation: true
-  watershed_erosion_iterations: 6
+  watershed_erosion_iterations: 8
 
   # Robust Fragment Merging
   enable_fragment_merging: true
