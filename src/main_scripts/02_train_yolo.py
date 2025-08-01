@@ -98,6 +98,8 @@ def main():
     logger.info(
         f"Parameters: Epochs={train_params['epochs']}, Batch Size={train_params['batch_size']}, Device='{train_params['device']}'")
 
+    model_name = train_params['yolo_model'].split('/')[-1].replace('.pt', '') + '_msx_oyster_run'
+
     try:
         model.train(
             data=str(dataset_yaml_path),
@@ -106,7 +108,7 @@ def main():
             device=train_params['device'],
             imgsz=train_params['img_size'],
             project=config['paths']['model_output_dir'],
-            name='yolov8n_msx_oyster_run'  # A name for the training run folder
+            name=model_name
         )
         logger.info("--- Model Training Script Finished Successfully ---")
 
