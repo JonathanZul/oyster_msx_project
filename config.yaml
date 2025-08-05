@@ -7,13 +7,13 @@
 # -------------------------------------------------------------------
 paths:
   # Input data
-  raw_wsis: "/Volumes/One Touch/MSX Project/data/raw/wsis"
+  raw_wsis: "/Volumes/One Touch/MSX Project/data/exports/wsis"
   qupath_exports: "/Volumes/One Touch/MSX Project/data/raw/qupath_exports"
 
   # Oyster instance masks
   oyster_masks: "/Volumes/One Touch/MSX Project/data/interim/oyster_masks"
 
-  # Processed dataset for YOLO
+  # Processed data
   yolo_dataset: "/Volumes/One Touch/MSX Project/data/processed/yolo_dataset"
 
   # Model training outputs
@@ -25,6 +25,12 @@ paths:
 
   # Logging directory
   logs: "logs/"
+
+# --- Paths for the archived U-Net segmentation approach ---
+#  tensorboard_log_dir: "logs/tensorboard_logs/"
+#  segmentation_annotations: "/Volumes/One Touch/MSX Project/data/interim/segmentation_annotations"
+#  segmentation_dataset: "/Volumes/One Touch/MSX Project/data/processed/segmentation_dataset"
+#  segmentation_model_dir: "models/segmentation_model"
 
 # 2. Dataset Creation Parameters
 # Parameters controlling the `01_create_dataset.py` script.
@@ -46,7 +52,7 @@ dataset_creation:
 # Parameters controlling the `02_train_yolo.py` script.
 # -------------------------------------------------------------------
 training:
-  yolo_model: "yolov8n.pt" # The pre-trained model to start from.
+  yolo_model: "yolo11n.pt" # The pre-trained model to start from.
   epochs: 100
   batch_size: 16
   device: "mps" # Options: "cpu", "cuda:0", "mps" (for Apple Silicon)
@@ -57,36 +63,73 @@ training:
 # Parameters controlling the `03_run_inference.py` script.
 # -------------------------------------------------------------------
 inference:
-  model_checkpoint: "models/yolov8n_msx_oyster_run3/weights/best.pt" # The path to your best trained model.
+  model_checkpoint: "models/yolov11m_msx_oyster_run7/weights/best.pt" # The path to your best trained model.
   patch_overlap: 0.2 # 20% overlap when creating patches for inference.
   conf_threshold: 0.25 # Confidence threshold for predictions.
 
-# 5. Oyster Segmentation Parameters (NEW SECTION)
-# Parameters controlling the `00_segment_oysters.py` script.
+
+
 # -------------------------------------------------------------------
-oyster_segmentation:
-  # Processing parameters
-  processing_downsample: 32.0
-  num_oysters_to_detect: 2
+# ARCHIVED Classical computer vision parameters
+#
+# Controls the `archive/00_segment_oysters_classical.py` script.
+# -------------------------------------------------------------------
+#oyster_segmentation:
+#  # Processing parameters
+#  processing_downsample: 32.0
+#  num_oysters_to_detect: 2
+#
+#  # Image pre-processing parameters for tissue detection
+#  gaussian_blur_kernel: [3, 3]
+#  adaptive_thresh_block_size: 11
+#  adaptive_thresh_c: 2
+#  morph_close_kernel: [5, 5]
+#  morph_close_iter: 2
+#  morph_open_kernel: [3, 3]
+#  morph_open_iter: 2
+#  min_contour_area_percent: 0.01
+#
+#  # Watrershed separation parameters
+#  use_watershed_separation: true
+#  watershed_erosion_iterations: 8
+#
+#  # Robust Fragment Merging
+#  enable_fragment_merging: true
+#  min_fragment_area_percent: 0.001 # Fragments smaller than this % of the image will be discarded as noise
+#
+#  # Debugging
+#  save_debug_images: true
+#  debug_img_max_dim: 1024
 
-  # Image pre-processing parameters for tissue detection
-  gaussian_blur_kernel: [3, 3]
-  adaptive_thresh_block_size: 11
-  adaptive_thresh_c: 2
-  morph_close_kernel: [5, 5]
-  morph_close_iter: 2
-  morph_open_kernel: [3, 3]
-  morph_open_iter: 2
-  min_contour_area_percent: 0.01
-
-  # Watrershed separation parameters
-  use_watershed_separation: true
-  watershed_erosion_iterations: 8
-
-  # Robust Fragment Merging
-  enable_fragment_merging: true
-  min_fragment_area_percent: 0.001 # Fragments smaller than this % of the image will be discarded as noise
-
-  # Debugging
-  save_debug_images: true
-  debug_img_max_dim: 1024
+# -------------------------------------------------------------------
+# ARCHIVED ML-based segmentation parameters
+#
+# Controls the `archive/01_segment_oysters_ml.py` script.
+# -------------------------------------------------------------------
+#segmentation:
+#  # --- Data Creation (for 00a_create_seg_dataset.py) ---
+#  overview_downsample: 32.0 # Downsample factor to extract WSI overviews
+#  image_size: [768, 1024] # Target size to resize all images/masks to [H, W]
+#  classes:
+#    "Oyster 1": 1                # NOTE: Class indices were 1-based for this script
+#    "Oyster 2": 2
+#
+#  # --- Model Training (for 00b_train_seg_model.py) ---
+#  device: "mps"                 # Device to use for training (options: "cpu", "cuda:0", "mps")
+#  encoder: "resnet34"           # Backbone for the U-Net
+#  encoder_weights: "imagenet"   # Use pre-trained weights
+#  epochs: 100                   # Total number of epochs to train the segmentation model
+#  batch_size: 4                 # Batch size for training
+#  learning_rate: 0.001          # Initial learning rate for training
+#  freeze_epochs: 30             # Number of epochs to train with the encoder frozen
+#  finetune_lr_factor: 0.01   # Factor to reduce LR by for the fine-tuning phase (0.001 -> 0.0001)
+#  selection_val_split: false     # Whether to use a selection split for training/validation
+#  data_split_seed: 42           # Random seed for splitting dataset into train/val sets
+#  train_val_split: 0.8          # Fraction of data to use for training (80% train, 20% val)
+#  early_stopping_patience: 50   # Early stopping patience for training
+#
+#  # --- Inference (for 00_run_segmentation.py) ---
+#  model_checkpoint: "models/segmentation_model/best_model.pt" # Path to the trained segmentation model
+#  confidence_threshold: 0.5     # Probability threshold to create binary mask
+#  min_object_size: 1000         # Minimum pixel area to keep a predicted object after inference
+#  save_visualization: true      # Save visualizations of the segmentation results

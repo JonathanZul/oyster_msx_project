@@ -22,15 +22,14 @@ The project is structured as a series of modular scripts that handle dataset cre
 ## Project Structure
 
 The repository is organized as follows:
-
-```
+```bash
 oyster_msx_project/
 ├── data/                 # Data is gitignored; this shows the expected structure
-│   ├── raw/wsis/         # Store original WSI files here
-│   └── interim/qupath_exports/ # Store GeoJSON annotations from QuPath here
+│ ├── raw/wsis/           # Store original WSI files here
+│ └── interim/qupath_exports/ # Store GeoJSON annotations from QuPath here
 ├── src/                  # All Python source code
-│   ├── main_scripts/     # Core pipeline scripts (01 to 04)
-│   └── utils/            # Helper modules for logging, file handling, etc.
+│ ├── main_scripts/       # Core pipeline scripts (01 to 04)
+│ └── utils/              # Helper modules for logging, file handling, etc.
 ├── config.yaml           # Central configuration file for all parameters
 ├── requirements.txt      # Python dependencies
 └── README.md             # This file
@@ -40,85 +39,75 @@ oyster_msx_project/
 
 ## Setup & Installation
 
-1. **Clone the repository:**
-
-   ```bash
-   git clone https://github.com/JonathanZul/oyster_msx_project.git
-   cd oyster_msx_project
-   ```
-
-2. **Create and activate a Python virtual environment:**
-
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-3. **Install the required dependencies:**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Add Data:**
-   - Place your Whole Slide Image files (`.tif`, `.vsi`, etc.) into the `data/raw/wsis/` directory.
-   - Export your annotations from QuPath as `.geojson` files into `data/interim/qupath_exports/`.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/JonathanZul/oyster_msx_project.git
+    cd oyster_msx_project
+    ```
+2.  **Create and activate a Python virtual environment:**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+3.  **Install the required dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+4.  **Add Data:**
+    -   Place your Whole Slide Image files (`.tif`) into the `data/raw/wsis/` directory.
+        - NOTE: The project uses Tifffile format for WSIs, which does not support `.vsi` files. If you have `.vsi` files or other format, convert them to `.tif` using QuPath or another tool.
+    -   Export your annotations from QuPath as `.geojson` files into `data/interim/qupath_exports/`.
 
 ---
 
 ## The Pre-processing Pipeline: Oyster Segmentation
 
-Before the main machine learning pipeline can run, we must first identify the individual oyster sections on each Whole Slide Image. Some slides contain two oyster sections that are very close or touching, which can confuse simple detection methods.
+Before the main machine learning pipeline can run, we must first identify and separate the individual oyster sections on each Whole Slide Image.
 
-This project includes a robust pre-processing script to handle this challenge.
+### First Method: Classical Computer Vision
 
-### Step 0: `00_segment_oysters.py`
+The primary, validated method for this task uses a classical computer vision script.
 
-- **Purpose:** To automatically generate a precise binary mask for each of the two main oyster sections on a raw WSI.
-- **Method:** The script uses a series of standard computer vision techniques (thresholding, morphological operations) to create an initial tissue mask. To separate touching oysters, it employs the **Watershed Algorithm**. This algorithm works by aggressively eroding the mask to find definite "cores" for each oyster and then intelligently flooding outwards to find the most likely separation boundary.
-- **Intelligent Merging:** After separation, the script identifies all resulting tissue fragments. It then intelligently merges significant fragments (like separated gill pieces) back to their closest parent oyster based on centroid distance, while discarding small noise artifacts.
-- **Output:** The script saves one `.png` mask file for each detected oyster into the `data/interim/oyster_masks/` directory. These masks are used by subsequent scripts.
+-   **Script:** `archive/00_segment_oysters_classical.py` (Archived)
+-   **Purpose:** To automatically generate a precise binary mask for each of the two main oyster sections on a raw WSI.
+-   **Method:** The script uses a series of standard computer vision techniques (thresholding, morphological operations) to create an initial tissue mask. To separate touching oysters, it employs the **Watershed Algorithm**. After separation, it intelligently merges significant tissue fragments (like separated gills) back to their closest parent oyster.
+-   **Output:** The script saves one `.png` mask file for each detected oyster into the `data/interim/oyster_masks/` directory. These masks are used by subsequent scripts.
 
-### Tuning the Segmentation
+### Second Method: ML-Based Segmentation (U-Net)
 
-The behavior of this script is controlled by the `oyster_segmentation` section in `config.yaml`. The most important parameters to tune are:
+As part of our research and development, we also implemented and evaluated a complete deep learning pipeline for the segmentation task.
 
-| Parameter                      | Type    | What it Does                                                                                                | How to Tune It                                                                                                                                                                                                                           |
-| :----------------------------- | :------ | :---------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `use_watershed_separation`     | boolean | Enables or disables the Watershed algorithm.                                                                | Set to `true` for slides with touching oysters.                                                                                                                                                                                          |
-| `watershed_erosion_iterations` | integer | **(Most Critical)** Controls how aggressively the algorithm erodes the mask to find separate "cores".       | **Increase** this value (e.g., from 3 to 6) if the oysters are still connected. **Decrease** it if the erosion is so strong that it's destroying one of the oyster cores entirely. Check `03_watershed_markers.png` in the debug output. |
-| `enable_fragment_merging`      | boolean | Enables or disables the intelligent merging of separated tissue fragments back to the main oyster bodies.   | Set to `true` to ensure you don't lose important tissue pieces (like gills) that get disconnected during processing.                                                                                                                     |
-| `min_fragment_area_percent`    | float   | The size threshold for merging. Fragments smaller than this percentage of the total image area are ignored. | **Increase** this value (e.g., from `0.001` to `0.005`) if small noise artifacts are being incorrectly merged. **Decrease** it if legitimate, smaller tissue fragments are being incorrectly discarded.                                  |
+-   **Summary:** This approach replaced the classical script with a three-part workflow to create a dataset (`00a`), train a model (`00b`), and run inference (`00`). It uses a U-Net architecture with a pre-trained ResNet34 encoder and employs advanced techniques like loss masking and two-phase fine-tuning.
+-   **Outcome:** The pipeline was successfully built and initial model training was achieved. However, performance with the limited dataset (22 slides) did not yet surpass the classical method in boundary precision.
+-   **Status:** All scripts (`00a`, `00b`, `00`, and tools) and utilities for this approach have been cleaned, documented, and are committed to the repository for future reference or development. The project is now proceeding with exploring a different ML architecture.
+
+### Third Method: Segment Anything Model (SAM)
+Third method, currently under development, uses the Segment Anything Model (SAM) to generate oyster masks. This method is still experimental and not yet integrated into the main pipeline.
 
 ---
 
 ## Usage: The Data Pipeline
 
-The project is designed to be run as a sequence of scripts. Configure all parameters in `config.yaml` before running.
+The project is designed to be run as a sequence of scripts. Configure all parameters in `config.yaml` before running. The oyster segmentation step is not included in the main pipeline, as it is assumed that the oyster masks are already available in `data/interim/oyster_masks/`.
 
-1. **Create the Dataset:** Generate image patches and labels for YOLO.
+The project makes use of some Pytorch functions not yet available on macOS with MPS backend. If you are running on macOS, you can set the environment variable `PYTORCH_ENABLE_MPS_FALLBACK=1` to use CPU fallback for these functions.
 
-   ```bash
-   python src/main_scripts/01_create_dataset.py
-   ```
-
-2. **Train the Model:** Train the YOLOv8 model on the created dataset.
-
-   ```bash
-   python src/main_scripts/02_train_yolo.py
-   ```
-
-3. **Run Inference:** Use the trained model to predict on a new WSI.
-
-   ```bash
-   python src/main_scripts/03_run_inference.py
-   ```
-
-4. **Format Predictions:** Convert the raw predictions into a QuPath-compatible GeoJSON file.
-
-   ```bash
-   python src/main_scripts/04_format_predictions.py
-   ```
+1.  **Create the Dataset:** Generate image patches and labels for YOLO.
+    ```bash
+    python -m src.main_scripts.01_create_dataset
+    ```
+2.  **Train the Model:** Train the YOLO model on the created dataset.
+    ```bash
+    python -m src.main_scripts.02_train_yolo
+    ```
+3.  **Run Inference:** Use the trained model to predict on a new WSI.
+    ```bash
+    python -m src.main_scripts.03_run_inference
+    ```
+4.  **Format Predictions:** Convert the raw predictions into a QuPath-compatible GeoJSON file.
+    ```bash
+    python -m src.main_scripts.04_format_predictions
+    ```
 
 ---
 
