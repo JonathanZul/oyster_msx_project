@@ -20,6 +20,7 @@ models/
 # 4. Outputs & Logs
 outputs/
 logs/
+verification_outputs/
 
 # 5. IDE & OS-specific files
 .DS_Store
