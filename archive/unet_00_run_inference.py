@@ -66,7 +66,7 @@ def postprocess_and_save_masks(raw_predictions: torch.Tensor, original_dims: tup
     Returns:
         None
     """
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
     original_w, original_h = original_dims
 
     # Convert raw logits to binary masks
@@ -133,7 +133,7 @@ def load_segmentation_model(config: dict, device, logger):
     Returns:
         smp.Unet | None: The loaded segmentation model or None if loading failed.
     """
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
     model_path = Path(seg_config["model_checkpoint"])
 
     if not model_path.exists():
@@ -176,7 +176,7 @@ def main():
     log_config(config, logger)
     logger.info("--- Starting ML-Based Segmentation Inference (Script 00) ---")
 
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
 
     # --- Device and Model Setup ---
     device_str = seg_config.get("device", "cpu")

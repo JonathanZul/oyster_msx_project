@@ -107,10 +107,10 @@ After the oyster masks have been generated, the main YOLO-based pipeline can be 
 Several methods for the initial oyster segmentation have been developed and evaluated. The current hybrid SAM approach (V8) provides the best balance of performance and robustness.
 
 | Method                       | Avg. IoU Score | Avg. Dice Score | Avg. J&F Score | Notes |
-|:-----------------------------|:--------------:|:---------------:| :---: | :--- |
-| **Classical CV** (Watershed) |     x.xxxx     |     x.xxxx      | x.xxxx | Fast but brittle. Fails on complex slides and highly sensitive to parameters. |
-| **U-Net** (ResNet34 Backend) |     x.xxxx     |     x.xxxx      | x.xxxx | Required training. Performance limited by the small dataset (22 slides), leading to overfitting. |
-| **Hybrid SAM**               |   **0.8706**   |   **0.9287**    | **0.8996** | Slower but highly robust. Intelligently handles touching and fragmented tissue. **Current recommended method.** |
+|:-----------------------------|:--------------:|:---------------:|:--------------:| :--- |
+| **Classical CV** (Watershed) |     0.6919     |     0.8084      |     0.7501     | Fast but brittle. Fails on complex slides and highly sensitive to parameters. |
+| **U-Net** (ResNet34 Backend) |     0.5506     |     0.6967      |     0.6237     | Required training. Performance limited by the small dataset (22 slides), leading to overfitting. |
+| **Hybrid SAM**               |   **0.8706**   |   **0.9287**    |   **0.8996**   | Slower but highly robust. Intelligently handles touching and fragmented tissue. **Current recommended method.** |
 
 *Scores evaluated on a consistent set of 21 annotated slides using `src/tools/evaluate_segmentation.py`.*
 

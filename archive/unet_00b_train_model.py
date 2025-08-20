@@ -220,7 +220,7 @@ def prepare_dataloaders(config, logger):
             - val_loader: DataLoader for the validation dataset.
     """
     # --- Load Configurations and Prepare Dataset ---
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
     paths = config["paths"]
     dataset_dir = Path(paths["segmentation_dataset"])
 
@@ -248,6 +248,11 @@ def prepare_dataloaders(config, logger):
     train_images, train_masks, train_rois = zip(*train_files)
     val_images, val_masks, val_rois = zip(*val_files)
     logger.info(f"Dataset split: {len(train_images)} training, {len(val_images)} validation samples.")
+
+    # Print out images used for validation for debugging purposes.
+    logger.info("Validation images:")
+    for img in val_images:
+        logger.info(f" - {img}")
 
     # Define data augmentations.
     target_h, target_w = seg_config["image_size"]
@@ -331,7 +336,7 @@ def main():
 
     # --- Setup Logging and TensorBoard ---
     logger, writer, model_dir = setup_paths_and_logging(config)
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
 
     # --- Device Selection ---
     device_str = seg_config.get("device", "cpu")

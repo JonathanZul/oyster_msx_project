@@ -110,7 +110,7 @@ def process_and_save_sample(wsi_path: Path, geojson_path: Path, config: dict, lo
         None
     """
     logger.info(f"--- Processing: {wsi_path.name} ---")
-    seg_config = config["segmentation"]
+    seg_config = config["ml_segmentation"]
     target_size_wh = tuple(seg_config["image_size"][::-1])
     dataset_dir = Path(config["paths"]["segmentation_dataset"])
 
