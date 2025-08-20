@@ -14,7 +14,7 @@ The project is structured as a series of modular scripts that handle the end-to-
 
 -   **Robust Pre-processing:** A sophisticated, hybrid pipeline using the Segment Anything Model (SAM) to accurately segment the two main oyster sections on a WSI.
 -   **Automated Dataset Creation:** Scripts to process QuPath annotations into a YOLO-compatible, patch-based dataset.
--   **Model Training:** A streamlined training pipeline using the `ultralytics` framework with pre-trained YOLOv8 models.
+-   **Model Training:** A streamlined training pipeline using the `ultralytics` framework with pre-trained YOLO models.
 -   **Scalable Inference:** A robust inference script to run the trained model on new, full WSIs.
 -   **QuPath Integration:** A final script to convert model predictions back into a GeoJSON format for easy validation and review in QuPath.
 
