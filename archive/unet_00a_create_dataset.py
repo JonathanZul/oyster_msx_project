@@ -16,7 +16,7 @@ from src.utils.wsi_utils import (
 )
 
 
-def _find_polygon_coords(coordinates_list: list):
+def find_polygon_coords(coordinates_list: list):
     """
     Recursively searches a nested list to find the first list that contains
     the actual polygon coordinates (a list of [x, y] pairs).
@@ -34,7 +34,7 @@ def _find_polygon_coords(coordinates_list: list):
         return coordinates_list
     # Recursive step: If the list is not the coordinate list, search its first element.
     if isinstance(coordinates_list, list) and len(coordinates_list) > 0:
-        return _find_polygon_coords(coordinates_list[0])
+        return find_polygon_coords(coordinates_list[0])
     return None
 
 
@@ -69,7 +69,7 @@ def rasterize_annotations_to_mask(blank_mask: np.ndarray, geojson_path: Path, sc
             channel_idx = class_map[class_name] - 1
 
             # Safely parse potentially messy coordinate structures from QuPath
-            raw_coords = _find_polygon_coords(ann["geometry"]["coordinates"])
+            raw_coords = find_polygon_coords(ann["geometry"]["coordinates"])
             if raw_coords is None:
                 logger.warning(f"Could not parse coordinates for an annotation in {geojson_path.name}. Skipping it.")
                 continue

@@ -4,6 +4,7 @@
 .venv/
 __pycache__/
 *.pyc
+.python-version
 
 # 2. Data Files
 data/raw/

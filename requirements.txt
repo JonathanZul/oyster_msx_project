@@ -9,11 +9,16 @@ tifffile
 numpy<2.0
 opencv-python
 
-# For Segmentation Model
-segmentation-models-pytorch
-albumentations
-timm
-tensorboard
+# For U-Net Segmentation Model
+#albumentations
+#timm
+#tensorboard
+
+# For SAM-based Segmentation
+segment-anything @ git+https://github.com/facebookresearch/segment-anything.git
+
+# For Segmentation Evaluation
+segmentation_models_pytorch
 
 # Utilities & File I/O
 pyyaml
