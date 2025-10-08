@@ -1,4 +1,16 @@
-# src/tools/run_cross_validation.py
+# src/tools/run_cross_validation_master.py
+"""
+Performs a K-fold cross-validation experiment to compare the performance
+of different oyster segmentation methods (e.g., U-Net, SAM, Watershed).
+
+This script automates the entire process:
+1.  Splitting the dataset into K folds.
+2.  Iterating through each fold, using it as a test set while training on the rest.
+3.  For each fold, running each specified segmentation pipeline.
+4.  Evaluating the generated predictions against ground truth annotations.
+5.  Aggregating the results across all folds and printing a final summary report
+    comparing the methods' average performance and stability.
+"""
 
 import argparse
 import shutil
@@ -31,7 +43,26 @@ from src.tools.evaluate_segmentation import rasterize_ground_truth
 
 
 def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list[str], config: dict, logger) -> tuple[dict, pd.DataFrame]:
-    """Evaluates the predictions for a single method on a single fold."""
+    """Evaluates segmentation predictions for a single fold against ground truth.
+
+    This function iterates through the test set of a fold, loads the predicted
+    masks and corresponding ground truth GeoJSONs, and calculates segmentation
+    metrics. It includes logic to handle cases where a method fails to produce
+    a mask and an "intelligent matching" system to correctly pair predicted
+    masks with ground truth masks.
+
+    Args:
+        pred_dir: Directory containing the prediction outputs for a method.
+        gt_dir: Directory containing the ground truth GeoJSON annotations.
+        test_stems: A list of slide filename stems in the current test set.
+        config: The main configuration dictionary.
+        logger: The logger instance for logging messages.
+
+    Returns:
+        A tuple containing:
+        - A dictionary with the average metrics (IoU, Dice, J&F) for the fold.
+        - A pandas DataFrame with detailed, per-prediction metrics.
+    """
     logger.info(f"Evaluating predictions in: {pred_dir}")
     wsi_dir = Path(config["paths"]["raw_wsis"])
     class_map = config["ml_segmentation"]["classes"]  # U-Net class map
@@ -54,11 +85,10 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
 
         if pred_mask_1 is None or pred_mask_2 is None:
             logger.warning(f"Missing prediction masks for {stem}. Scoring as zero.")
-            # Append zero scores if a method failed to produce a mask
+            # If a method fails to generate a mask, assign zero scores to penalize the failure.
             fold_results.append({"dice": 0.0, "iou": 0.0, "j_and_f": 0.0})
             fold_results.append({"dice": 0.0, "iou": 0.0, "j_and_f": 0.0})
 
-            # Add per-prediction entries
             per_prediction_results.append({
                 "slide": stem,
                 "oyster": "oyster_1",
@@ -86,25 +116,30 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
         pred_mask_1 = pred_mask_1.astype(bool)
         pred_mask_2 = pred_mask_2.astype(bool)
 
-        # Intelligent matching
+        # Intelligent Matching: The model doesn't label its output masks as "oyster_1"
+        # or "oyster_2". To score correctly, we must determine the best pairing
+        # between the two predicted masks and the two ground truth masks. We do this
+        # by checking both possible permutations and choosing the one with the
+        # highest total Dice score.
         dice_A1, _, _ = calculate_segmentation_metrics(pred_mask_1, gt_mask_1)
         dice_A2, _, _ = calculate_segmentation_metrics(pred_mask_2, gt_mask_2)
         dice_B1, _, _ = calculate_segmentation_metrics(pred_mask_1, gt_mask_2)
         dice_B2, _, _ = calculate_segmentation_metrics(pred_mask_2, gt_mask_1)
 
         if (dice_A1 + dice_A2) >= (dice_B1 + dice_B2):
+            # Match: pred_1 -> gt_1, pred_2 -> gt_2
             metrics1 = calculate_segmentation_metrics(pred_mask_1, gt_mask_1)
             metrics2 = calculate_segmentation_metrics(pred_mask_2, gt_mask_2)
-            matching = "A"  # pred_1 -> gt_1, pred_2 -> gt_2
+            matching = "A"
         else:
+            # Match: pred_1 -> gt_2, pred_2 -> gt_1
             metrics1 = calculate_segmentation_metrics(pred_mask_1, gt_mask_2)
             metrics2 = calculate_segmentation_metrics(pred_mask_2, gt_mask_1)
-            matching = "B"  # pred_1 -> gt_2, pred_2 -> gt_1
+            matching = "B"
 
         fold_results.append(metrics1)
         fold_results.append(metrics2)
 
-        # Add per-prediction entries with detailed info
         per_prediction_results.append({
             "slide": stem,
             "oyster": "oyster_1",
@@ -124,9 +159,9 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
             "matching": matching
         })
 
-    # Calculate the average metrics for this fold
     if not fold_results:
         return {"iou": 0, "dice": 0, "j_and_f": 0}, pd.DataFrame()
+
     avg_iou = np.mean([m["iou"] for m in fold_results])
     avg_dice = np.mean([m["dice"] for m in fold_results])
     avg_j_and_f = np.mean([m["j_and_f"] for m in fold_results])
@@ -138,17 +173,16 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
 
 
 def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logger):
-    """Print a comparison table showing all methods side-by-side for each prediction in the fold.
+    """Prints a detailed, per-prediction comparison table for all methods in a fold.
 
     Args:
-        all_fold_predictions: Dict mapping method name to per-prediction DataFrame
-        fold_num: Current fold number
-        logger: Logger instance
+        all_fold_predictions: Dict mapping method names to their per-prediction DataFrames.
+        fold_num: The current fold number being reported.
+        logger: The logger instance for output.
     """
     if not all_fold_predictions:
         return
 
-    # Get all unique slides and oysters from the first method
     first_method = list(all_fold_predictions.keys())[0]
     base_df = all_fold_predictions[first_method]
 
@@ -156,7 +190,6 @@ def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logge
         logger.info("No predictions to display in table.")
         return
 
-    # Create a combined dataframe for comparison
     comparison_rows = []
 
     for _, row in base_df.iterrows():
@@ -168,7 +201,6 @@ def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logge
             'oyster': oyster
         }
 
-        # Add metrics from each method
         for method in all_fold_predictions.keys():
             method_df = all_fold_predictions[method]
             method_row = method_df[(method_df['slide'] == slide) & (method_df['oyster'] == oyster)]
@@ -188,12 +220,11 @@ def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logge
 
     comparison_df = pd.DataFrame(comparison_rows)
 
-    # Print the table
     logger.info(f"\n{'=' * 80}")
     logger.info(f"PER-PREDICTION SCORES - FOLD {fold_num}")
     logger.info(f"{'=' * 80}")
 
-    # Format the dataframe for better display
+    # Configure pandas display options for clean console output.
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_columns', None)
     pd.set_option('display.width', None)
@@ -202,7 +233,6 @@ def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logge
     logger.info(f"\n{comparison_df.to_string(index=False)}")
     logger.info(f"{'=' * 80}\n")
 
-    # Calculate and display per-slide averages
     logger.info(f"Per-Slide Averages (Fold {fold_num}):")
     slide_groups = comparison_df.groupby('slide')
 
@@ -218,13 +248,14 @@ def print_fold_comparison_table(all_fold_predictions: dict, fold_num: int, logge
 
 
 def main():
-    """Main function to orchestrate the K-Fold Cross-Validation process."""
+    """Main function to perform the K-Fold Cross-Validation process."""
     parser = argparse.ArgumentParser(description="Run K-Fold Cross-Validation for Segmentation Methods")
     parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Path to the config file.")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    if not config: return
+    if not config:
+        return
 
     logger = setup_logging(Path("logs"), "cross_validation")
     log_config(config, logger)
@@ -233,14 +264,14 @@ def main():
     logger.info(
         f"--- Starting {cv_config['n_splits']}-Fold Cross-Validation for methods: {cv_config['methods_to_run']} ---")
 
-    # --- 1. Data Splitting ---
+    # 1. Prepare Data and Folds
     gt_annot_dir = Path(config["paths"]["segmentation_annotations"])
     all_gt_paths = [p for p in gt_annot_dir.glob("*.geojson") if not p.name.startswith("._")]
     all_stems = sorted([p.stem for p in all_gt_paths])
 
     kf = KFold(n_splits=cv_config["n_splits"], shuffle=True, random_state=cv_config.get("data_split_seed"))
 
-    # --- 2. Main Cross-Validation Loop ---
+    # 2. Main Cross-Validation Loop
     all_results = []
 
     for fold, (train_idx, test_idx) in enumerate(kf.split(all_stems)):
@@ -252,7 +283,7 @@ def main():
 
         logger.info(f"Training on {len(train_stems)} slides, Testing on {len(test_stems)} slides.")
 
-        # Directory to store all outputs for this fold
+        # Directory to store all temporary outputs for this fold.
         fold_output_dir = Path(cv_config["temp_output_dir"]) / f"fold_{fold_num}"
         if fold_output_dir.exists():
             logger.warning(f"Removing existing temporary directory for fold {fold_num}: {fold_output_dir}")
@@ -261,7 +292,7 @@ def main():
             except OSError as e:
                 logger.error(f"Error removing directory {fold_output_dir}: {e}. This may be a temp file issue.")
 
-        # This will create the directory and not fail if it already exists.
+        # Store per-prediction results for all methods to generate a comparison table at the end of the fold.
         fold_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Store per-prediction results for all methods in this fold
@@ -272,23 +303,21 @@ def main():
 
             method_pred_dir = fold_output_dir / method
 
-            # --- 3. Run Each Method's Pipeline ---
+            # 3. Run Each Method's Pipeline
             if method == "unet":
                 model_path = fold_output_dir / "unet_model.pt"
-                # A) Train the U-Net model on the training set for this fold
+                # Train the U-Net model on the current training split.
                 run_unet_training(config, logger, train_stems, test_stems, model_path)
-                # B) Run inference on the test set for this fold
+                # Run inference on the current test split using the just-trained model.
                 run_unet_inference(config, logger, model_path, test_stems, method_pred_dir)
 
             elif method == "sam":
-                # Run the SAM pipeline on the test set files
                 run_sam_pipeline(config, logger, test_stems, output_override_dir=method_pred_dir)
 
             elif method == "watershed":
-                # Run the Watershed pipeline on the test set files
                 run_watershed_pipeline(config, logger, test_stems, output_override_dir=method_pred_dir)
 
-            # --- 4. Evaluate the results for this method on this fold ---
+            # 4. Evaluate Results for the Current Method and Fold
             fold_metrics, per_prediction_df = evaluate_predictions_for_fold(
                 method_pred_dir, gt_annot_dir, test_stems, config, logger
             )
@@ -297,14 +326,13 @@ def main():
             fold_metrics["fold"] = fold_num
             all_results.append(fold_metrics)
 
-            # Store the per-prediction DataFrame for this method
             fold_prediction_tables[method] = per_prediction_df
 
             logger.info(f"Metrics for {method.upper()} on Fold {fold_num}: {fold_metrics}")
 
         print_fold_comparison_table(fold_prediction_tables, fold_num, logger)
 
-    # --- 5. Final Report ---
+    # 5. Final Report Generation
     logger.info(f"\n\n{'=' * 25} CROSS-VALIDATION SUMMARY {'=' * 25}")
     results_df = pd.DataFrame(all_results)
 

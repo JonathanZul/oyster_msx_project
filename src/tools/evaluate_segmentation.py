@@ -1,3 +1,14 @@
+# src/utils/evaluation_utils.py
+"""
+Evaluates the final segmentation masks produced by a model against the
+corresponding ground truth GeoJSON annotations.
+
+This script is intended for final assessment after a model has been trained and
+has generated its predictions. It iterates through each slide's output directory,
+loads the predicted masks and ground truth, calculates performance metrics
+(IoU, Dice, etc.), and prints a summary report to the console.
+"""
+
 import argparse
 from pathlib import Path
 
@@ -6,6 +17,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+# Add src to path to allow for relative imports.
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -21,13 +33,14 @@ from src.utils.evaluation_utils import (
 
 
 def main():
-    """Main function to evaluate final segmentation masks against ground truth annotations."""
+    """Runs the main evaluation pipeline."""
     parser = argparse.ArgumentParser(description="Evaluate Segmentation Performance")
     parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Path to the config file.")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    if not config: return
+    if not config:
+        return
 
     logger = setup_logging(Path("logs"), "evaluate_segmentation")
     log_config(config, logger)
@@ -60,6 +73,7 @@ def main():
         pred_mask_2 = cv2.imread(str(slide_dir / "oyster_2_mask.png"), cv2.IMREAD_GRAYSCALE)
         if pred_mask_1 is None or pred_mask_2 is None: continue
 
+        # Convert vector ground truth annotations to a raster mask for pixel-wise comparison.
         target_shape = pred_mask_1.shape
         gt_mask_multichannel = rasterize_ground_truth(gt_geojson_path, target_shape, wsi_dims, class_map, logger)
         if gt_mask_multichannel is None: continue
@@ -67,12 +81,12 @@ def main():
         gt_mask_1 = gt_mask_multichannel[:, :, 0]
         gt_mask_2 = gt_mask_multichannel[:, :, 1]
 
-        # Use the utility to handle label swapping
+        # Determine the best pairing of predicted masks to ground truth masks to
+        # avoid penalizing the model for arbitrary label ordering.
         final_pred_1, final_gt_1, final_pred_2, final_gt_2 = intelligently_match_masks(
             pred_mask_1, pred_mask_2, gt_mask_1, gt_mask_2, logger, slide_name
         )
 
-        # Use the centralized utility to calculate all metrics
         metrics1 = calculate_segmentation_metrics(final_pred_1, final_gt_1)
         metrics2 = calculate_segmentation_metrics(final_pred_2, final_gt_2)
 
@@ -86,7 +100,7 @@ def main():
         logger.error("No results were generated. Check paths and ground truth files.");
         return
 
-    # --- Display Final Report ---
+    # --- Generate and Display Final Report ---
     df = pd.DataFrame(results)
     avg_iou = df[['iou_oyster1', 'iou_oyster2']].values.mean()
     avg_dice = df[['dice_oyster1', 'dice_oyster2']].values.mean()

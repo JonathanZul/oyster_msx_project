@@ -1,4 +1,18 @@
 # src/tools/run_cross_validation.py
+"""
+Performs a K-fold cross-validation experiment specifically for the U-Net
+segmentation model.
+
+This script manages the end-to-end process of:
+1.  Splitting the pre-generated patch dataset into K folds.
+2.  For each fold:
+    a. Initializing a new U-Net model.
+    b. Training the model on the training splits of the current fold.
+    c. Evaluating the trained model's performance on the hold-out test split.
+3.  Aggregating the performance metrics from all folds to calculate the model's
+    average performance and standard deviation, providing a robust measure of
+    its effectiveness.
+"""
 
 import argparse
 import random
@@ -17,7 +31,7 @@ from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-# Add src to path to allow for relative imports
+# Add src to path to allow for relative imports from the project root.
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
