@@ -58,6 +58,8 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
         test_stems: A list of slide filename stems in the current test set.
         config: The main configuration dictionary.
         logger: The logger instance for logging messages.
+        fold_num: The current fold number (for logging purposes).
+        method_name: The name of the segmentation method being evaluated.
 
     Returns:
         A tuple containing:
@@ -68,7 +70,6 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
     wsi_dir = Path(config["paths"]["raw_wsis"])
     class_map = config["ml_segmentation"]["classes"]  # U-Net class map
 
-    fold_results = []
     per_prediction_results = []
 
     eval_debug_dir = Path("verification_outputs/eval_debug") / f"fold_{fold_num}" / method_name
@@ -91,9 +92,6 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
 
         if pred_mask_1_raw is None or pred_mask_2_raw is None:
             logger.warning(f"Missing prediction masks for {stem}. Scoring as zero.")
-            # If a method fails to generate a mask, assign zero scores to penalize the failure.
-            fold_results.append({"dice": 0.0, "iou": 0.0, "j_and_f": 0.0})
-            fold_results.append({"dice": 0.0, "iou": 0.0, "j_and_f": 0.0})
 
             per_prediction_results.append({
                 "slide": stem,
@@ -160,11 +158,13 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
     if not per_prediction_results:
         return {"iou": 0, "dice": 0, "j_and_f": 0}, pd.DataFrame()
 
+    # Create the DataFrame from the detailed results.
     per_prediction_df = pd.DataFrame(per_prediction_results)
 
-    avg_iou = np.mean([m["iou"] for m in fold_results])
-    avg_dice = np.mean([m["dice"] for m in fold_results])
-    avg_j_and_f = np.mean([m["j_and_f"] for m in fold_results])
+    # Calculate the summary statistics directly from this DataFrame.
+    avg_iou = per_prediction_df['iou'].mean()
+    avg_dice = per_prediction_df['dice'].mean()
+    avg_j_and_f = per_prediction_df['j_and_f'].mean()
 
     summary = {"iou": avg_iou, "dice": avg_dice, "j_and_f": avg_j_and_f}
 

@@ -115,7 +115,7 @@ inference:
 # ===================================================================
 cross_validation:
   # The segmentation methods to compare. Options: "watershed", "sam", "unet"
-  methods_to_run: ["watershed"]
+  methods_to_run: ["watershed", "sam", "unet"]
 
   # K-Fold settings
   n_splits: 5
