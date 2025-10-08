@@ -29,7 +29,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging, log_config
-from src.utils.evaluation_utils import calculate_segmentation_metrics
+from src.utils.evaluation_utils import calculate_segmentation_metrics, intelligently_match_masks
 from src.utils.wsi_utils import find_matching_wsi_path, get_wsi_level0_dimensions
 
 # Import the callable pipeline functions from our refactored scripts
@@ -42,7 +42,8 @@ from archive.s00_segment_oysters_classical import run_watershed_pipeline
 from src.tools.evaluate_segmentation import rasterize_ground_truth
 
 
-def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list[str], config: dict, logger) -> tuple[dict, pd.DataFrame]:
+def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list[str], config: dict, logger,
+                                  fold_num: int, method_name: str) -> tuple[dict, pd.DataFrame]:
     """Evaluates segmentation predictions for a single fold against ground truth.
 
     This function iterates through the test set of a fold, loads the predicted
@@ -70,9 +71,14 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
     fold_results = []
     per_prediction_results = []
 
+    eval_debug_dir = Path("verification_outputs/eval_debug") / f"fold_{fold_num}" / method_name
+    eval_debug_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving evaluation debug images to: {eval_debug_dir.resolve()}")
+
     for stem in test_stems:
         gt_geojson_path = gt_dir / f"{stem}.geojson"
         if not gt_geojson_path.exists():
+            logger.warning(f"Ground truth file not found for {stem}, skipping evaluation for this slide.")
             continue
 
         wsi_path = find_matching_wsi_path(gt_geojson_path, wsi_dir)
@@ -80,10 +86,10 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
         wsi_dims = get_wsi_level0_dimensions(wsi_path, logger)
         if not wsi_dims: continue
 
-        pred_mask_1 = cv2.imread(str(pred_dir / stem / "oyster_1_mask.png"), cv2.IMREAD_GRAYSCALE)
-        pred_mask_2 = cv2.imread(str(pred_dir / stem / "oyster_2_mask.png"), cv2.IMREAD_GRAYSCALE)
+        pred_mask_1_raw = cv2.imread(str(pred_dir / stem / "oyster_1_mask.png"), cv2.IMREAD_GRAYSCALE)
+        pred_mask_2_raw = cv2.imread(str(pred_dir / stem / "oyster_2_mask.png"), cv2.IMREAD_GRAYSCALE)
 
-        if pred_mask_1 is None or pred_mask_2 is None:
+        if pred_mask_1_raw is None or pred_mask_2_raw is None:
             logger.warning(f"Missing prediction masks for {stem}. Scoring as zero.")
             # If a method fails to generate a mask, assign zero scores to penalize the failure.
             fold_results.append({"dice": 0.0, "iou": 0.0, "j_and_f": 0.0})
@@ -107,67 +113,60 @@ def evaluate_predictions_for_fold(pred_dir: Path, gt_dir: Path, test_stems: list
             })
             continue
 
-        gt_mask_multichannel = rasterize_ground_truth(gt_geojson_path, pred_mask_1.shape, wsi_dims, class_map, logger)
+        gt_mask_multichannel = rasterize_ground_truth(gt_geojson_path, pred_mask_1_raw.shape, wsi_dims, class_map, logger)
         if gt_mask_multichannel is None:
             continue
 
+        # Convert all masks to boolean for metric calculations and matching.
         gt_mask_1 = gt_mask_multichannel[:, :, 0].astype(bool)
         gt_mask_2 = gt_mask_multichannel[:, :, 1].astype(bool)
-        pred_mask_1 = pred_mask_1.astype(bool)
-        pred_mask_2 = pred_mask_2.astype(bool)
+        pred_mask_1 = pred_mask_1_raw.astype(bool)
+        pred_mask_2 = pred_mask_2_raw.astype(bool)
 
-        # Intelligent Matching: The model doesn't label its output masks as "oyster_1"
-        # or "oyster_2". To score correctly, we must determine the best pairing
-        # between the two predicted masks and the two ground truth masks. We do this
-        # by checking both possible permutations and choosing the one with the
-        # highest total Dice score.
-        dice_A1, _, _ = calculate_segmentation_metrics(pred_mask_1, gt_mask_1)
-        dice_A2, _, _ = calculate_segmentation_metrics(pred_mask_2, gt_mask_2)
-        dice_B1, _, _ = calculate_segmentation_metrics(pred_mask_1, gt_mask_2)
-        dice_B2, _, _ = calculate_segmentation_metrics(pred_mask_2, gt_mask_1)
+        final_pred_1, final_gt_1, final_pred_2, final_gt_2 = intelligently_match_masks(
+            pred_mask_1, pred_mask_2, gt_mask_1, gt_mask_2, logger, stem
+        )
 
-        if (dice_A1 + dice_A2) >= (dice_B1 + dice_B2):
-            # Match: pred_1 -> gt_1, pred_2 -> gt_2
-            metrics1 = calculate_segmentation_metrics(pred_mask_1, gt_mask_1)
-            metrics2 = calculate_segmentation_metrics(pred_mask_2, gt_mask_2)
-            matching = "A"
-        else:
-            # Match: pred_1 -> gt_2, pred_2 -> gt_1
-            metrics1 = calculate_segmentation_metrics(pred_mask_1, gt_mask_2)
-            metrics2 = calculate_segmentation_metrics(pred_mask_2, gt_mask_1)
-            matching = "B"
+        # 2. Calculate the final metrics on the correctly paired masks.
+        metrics1 = calculate_segmentation_metrics(final_pred_1, final_gt_1)
+        metrics2 = calculate_segmentation_metrics(final_pred_2, final_gt_2)
 
-        fold_results.append(metrics1)
-        fold_results.append(metrics2)
+        # 3. Append detailed results for the final report table.
+        per_prediction_results.append({"slide": stem, "oyster": "oyster_1", "status": "OK", **metrics1})
+        per_prediction_results.append({"slide": stem, "oyster": "oyster_2", "status": "OK", **metrics2})
 
-        per_prediction_results.append({
-            "slide": stem,
-            "oyster": "oyster_1",
-            "dice": metrics1["dice"],
-            "iou": metrics1["iou"],
-            "j_and_f": metrics1["j_and_f"],
-            "status": "OK",
-            "matching": matching
-        })
-        per_prediction_results.append({
-            "slide": stem,
-            "oyster": "oyster_2",
-            "dice": metrics2["dice"],
-            "iou": metrics2["iou"],
-            "j_and_f": metrics2["j_and_f"],
-            "status": "OK",
-            "matching": matching
-        })
+        # 4. Generate and save the blended visualization for each correctly paired oyster.
+        def create_blend_viz(pred_mask, gt_mask):
+            pred_uint8 = (pred_mask * 255).astype(np.uint8)
+            gt_uint8 = (gt_mask * 255).astype(np.uint8)
 
-    if not fold_results:
+            # Create a 3-channel image for color overlays.
+            gt_viz = cv2.cvtColor(gt_uint8, cv2.COLOR_GRAY2BGR)
+            gt_viz[gt_mask, :] = [255, 0, 0]  # Blue for Ground Truth pixels
+
+            pred_viz = cv2.cvtColor(pred_uint8, cv2.COLOR_GRAY2BGR)
+            pred_viz[pred_mask, :] = [0, 255, 0]  # Green for Prediction pixels
+
+            # The blend will show Cyan (Blue + Green) where they overlap (True Positives).
+            blend = cv2.addWeighted(gt_viz, 0.5, pred_viz, 0.5, 0)
+            return blend
+
+        blend_1 = create_blend_viz(final_pred_1, final_gt_1)
+        cv2.imwrite(str(eval_debug_dir / f"{stem}_oyster1_eval.png"), blend_1)
+
+        blend_2 = create_blend_viz(final_pred_2, final_gt_2)
+        cv2.imwrite(str(eval_debug_dir / f"{stem}_oyster2_eval.png"), blend_2)
+
+    if not per_prediction_results:
         return {"iou": 0, "dice": 0, "j_and_f": 0}, pd.DataFrame()
+
+    per_prediction_df = pd.DataFrame(per_prediction_results)
 
     avg_iou = np.mean([m["iou"] for m in fold_results])
     avg_dice = np.mean([m["dice"] for m in fold_results])
     avg_j_and_f = np.mean([m["j_and_f"] for m in fold_results])
 
     summary = {"iou": avg_iou, "dice": avg_dice, "j_and_f": avg_j_and_f}
-    per_prediction_df = pd.DataFrame(per_prediction_results)
 
     return summary, per_prediction_df
 
@@ -319,7 +318,7 @@ def main():
 
             # 4. Evaluate Results for the Current Method and Fold
             fold_metrics, per_prediction_df = evaluate_predictions_for_fold(
-                method_pred_dir, gt_annot_dir, test_stems, config, logger
+                method_pred_dir, gt_annot_dir, test_stems, config, logger, fold_num, method
             )
 
             fold_metrics["method"] = method

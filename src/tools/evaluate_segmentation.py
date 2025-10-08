@@ -28,7 +28,8 @@ from src.utils.wsi_utils import find_matching_wsi_path, get_wsi_level0_dimension
 from src.utils.evaluation_utils import (
     calculate_segmentation_metrics,
     rasterize_ground_truth,
-    intelligently_match_masks
+    intelligently_match_masks,
+    find_polygon_coords
 )
 
 
