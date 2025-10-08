@@ -1,4 +1,4 @@
-# src/utils/evaluation_utils.py
+# src/tools/evaluate_segmentation.py
 """
 Evaluates the final segmentation masks produced by a model against the
 corresponding ground truth GeoJSON annotations.
