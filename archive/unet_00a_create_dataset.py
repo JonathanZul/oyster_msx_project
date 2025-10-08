@@ -14,28 +14,7 @@ from src.utils.wsi_utils import (
     get_wsi_level0_dimensions,
     find_matching_wsi_path
 )
-
-
-def find_polygon_coords(coordinates_list: list):
-    """
-    Recursively searches a nested list to find the first list that contains
-    the actual polygon coordinates (a list of [x, y] pairs).
-    This handles inconsistencies in GeoJSON nesting from QuPath.
-
-    Args:
-        coordinates_list (list): The potentially nested list of coordinates.
-
-    Returns:
-        list | None: The list of [x, y] pairs if found, else None.
-    """
-    # Base case: The list contains elements that are [x, y] pairs.
-    if all(isinstance(elem, list) and len(elem) == 2 and isinstance(elem[0], (int, float)) for elem in
-           coordinates_list):
-        return coordinates_list
-    # Recursive step: If the list is not the coordinate list, search its first element.
-    if isinstance(coordinates_list, list) and len(coordinates_list) > 0:
-        return find_polygon_coords(coordinates_list[0])
-    return None
+from src.utils.evaluation_utils import find_polygon_coords
 
 
 def rasterize_annotations_to_mask(blank_mask: np.ndarray, geojson_path: Path, scaling_factors: tuple, class_map: dict,

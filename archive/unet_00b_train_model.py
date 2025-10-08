@@ -146,7 +146,10 @@ def validate(loader, model, loss_fn, device):
     """
     model.eval()
     total_loss = 0
-    total_tp, total_fp, total_fn, total_tn = 0, 0, 0, 0  # Accumulate stats for stable metrics
+    total_tp = torch.tensor(0, dtype=torch.long, device=device)
+    total_fp = torch.tensor(0, dtype=torch.long, device=device)
+    total_fn = torch.tensor(0, dtype=torch.long, device=device)
+    total_tn = torch.tensor(0, dtype=torch.long, device=device)
 
     with torch.no_grad():
         for data, targets, rois in loader:
@@ -161,10 +164,11 @@ def validate(loader, model, loss_fn, device):
             tp, fp, fn, tn = smp.metrics.get_stats(
                 output=predictions, target=targets.long(), mode='multilabel', threshold=0.5
             )
-            total_tp += tp;
-            total_fp += fp;
-            total_fn += fn;
-            total_tn += tn
+
+            total_tp += tp.sum()
+            total_fp += fp.sum()
+            total_fn += fn.sum()
+            total_tn += tn.sum()
 
     # Step 2: Calculate metrics from the accumulated stats for the entire validation set.
     # `reduction="micro"` correctly aggregates the stats before calculating the final score.
@@ -177,7 +181,6 @@ def validate(loader, model, loss_fn, device):
 
 
 # --- Helper Functions for main() ---
-
 def setup_paths_and_logging(config):
     """
     Sets up directories, logging, and TensorBoard.
@@ -316,6 +319,158 @@ def log_image_predictions(loader, model, writer, epoch, device):
 
 
 # --- Main Training ---
+
+def run_unet_training(
+        config: dict,
+        logger,
+        train_stems: list[str],
+        val_stems: list[str],
+        model_output_path: Path
+) -> Path:
+    """
+    Process the training of a U-Net model for a single fold of cross-validation.
+
+    Args:
+        config (dict): The full project configuration.
+        logger: The logger instance.
+        train_stems (list[str]): A list of slide stems for the training set.
+        val_stems (list[str]): A list of slide stems for the validation set.
+        model_output_path (Path): The path where the final best model should be saved.
+
+    Returns:
+        Path: The path to the saved best model.
+    """
+    logger.info(f"--- Starting U-Net Training for a single fold ---")
+    logger.info(f"Training on {len(train_stems)} samples, validating on {len(val_stems)} samples.")
+
+    seg_config = config["ml_segmentation"]
+    paths = config["paths"]
+
+    # --- Device and TensorBoard Setup ---
+    device = torch.device(seg_config.get("device", "cpu"))
+    writer = SummaryWriter(log_dir=str(model_output_path.parent / f"tensorboard_{model_output_path.stem}"))
+    logger.info(f"Using device: {device}")
+    logger.info(f"TensorBoard logs for this fold at: {writer.log_dir}")
+
+    # --- Data Preparation ---
+    dataset_dir = Path(paths["segmentation_dataset"])
+
+    def get_and_verify_paths_from_stems(stems: list[str]) -> tuple[list, list, list]:
+        """
+        Converts slide stems to full file paths and verifies that each file exists.
+        Returns only the paths for which all three files (image, mask, roi) are found.
+        """
+        verified_img_paths, verified_mask_paths, verified_roi_paths = [], [], []
+
+        for s in stems:
+            img_path = dataset_dir / "images" / f"{s}.png"
+            mask_path = dataset_dir / "masks" / f"{s}.npy"
+            roi_path = dataset_dir / "rois" / f"{s}.npy"
+
+            if not img_path.exists():
+                logger.warning(f"Image file not found, skipping sample: {img_path}")
+                continue
+            if not mask_path.exists():
+                logger.warning(f"Mask file not found, skipping sample: {mask_path}")
+                continue
+            if not roi_path.exists():
+                logger.warning(f"ROI file not found, skipping sample: {roi_path}")
+                continue
+
+            verified_img_paths.append(str(img_path))
+            verified_mask_paths.append(str(mask_path))
+            verified_roi_paths.append(str(roi_path))
+
+        return verified_img_paths, verified_mask_paths, verified_roi_paths
+
+    logger.info("Verifying training data paths...")
+    train_images, train_masks, train_rois = get_and_verify_paths_from_stems(train_stems)
+    logger.info("Verifying validation data paths...")
+    val_images, val_masks, val_rois = get_and_verify_paths_from_stems(val_stems)
+
+    if not train_images or not val_images:
+        logger.critical(
+            "Could not find any valid data for training or validation after path verification. Aborting fold.")
+        return None
+
+    # Define transforms
+    target_h, target_w = seg_config["image_size"]
+    train_transform = A.Compose([
+        A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5),
+        A.ColorJitter(p=0.8),
+        A.Resize(height=target_h, width=target_w, interpolation=cv2.INTER_AREA),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2(),
+    ])
+    val_transform = A.Compose([
+        A.Resize(height=target_h, width=target_w, interpolation=cv2.INTER_AREA),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2(),
+    ])
+
+    train_ds = OysterSegDataset(train_images, train_masks, train_rois, transform=train_transform)
+    val_ds = OysterSegDataset(val_images, val_masks, val_rois, transform=val_transform)
+    train_loader = DataLoader(train_ds, batch_size=seg_config["batch_size"], shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=seg_config["batch_size"], shuffle=False, num_workers=2)
+
+    # --- Model, Loss, and Optimizer Setup ---
+    model = smp.Unet(
+        encoder_name=seg_config["encoder"], encoder_weights=seg_config["encoder_weights"],
+        in_channels=3, classes=len(seg_config["classes"]),
+    ).to(device)
+
+    dice_loss_fn = smp.losses.DiceLoss(mode='multilabel', from_logits=True)
+    bce_loss_fn = smp.losses.SoftBCEWithLogitsLoss(reduction='none')
+
+    def masked_loss(p, t, r):
+        return 0.5 * dice_loss_fn(p, t) + 0.5 * (bce_loss_fn(p, t) * r).sum() / (r.sum() + 1e-6)
+
+    loss_fn = masked_loss
+    scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
+
+    # --- Training Loop ---
+    # CHANGE: Track best Dice score instead of best loss
+    best_val_dice = 0.0  # Higher is better for Dice
+    epochs = seg_config.get("epochs_per_fold", 20)
+    patience = seg_config.get("early_stopping_patience", 10)
+    epochs_without_improvement = 0
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=seg_config["learning_rate"])
+
+    for epoch in range(epochs):
+        logger.info(f"\n--- Fold Training Epoch {epoch + 1}/{epochs} ---")
+        train_loss = train_one_epoch(train_loader, model, optimizer, loss_fn, device, scaler)
+        val_metrics = validate(val_loader, model, loss_fn, device)
+
+        val_loss = val_metrics["loss"]
+        val_dice = val_metrics["dice"]
+        val_iou = val_metrics["iou"]
+
+        # Log to TensorBoard
+        writer.add_scalar("Loss/train_fold", train_loss, epoch)
+        writer.add_scalar("Loss/val_fold", val_loss, epoch)
+        writer.add_scalar("Metrics/val_dice", val_dice, epoch)
+        writer.add_scalar("Metrics/val_iou", val_iou, epoch)
+
+        # CHANGE: Save model based on best Dice score (higher is better)
+        if val_dice > best_val_dice:
+            best_val_dice = val_dice
+            epochs_without_improvement = 0
+            torch.save(model.state_dict(), model_output_path)
+            logger.info(f"✓ Validation Dice improved to {val_dice:.4f}. Saved best model to {model_output_path}")
+        else:
+            epochs_without_improvement += 1
+            logger.info(f"Validation Dice did not improve (current: {val_dice:.4f}, best: {best_val_dice:.4f}). "
+                        f"Patience: {epochs_without_improvement}/{patience}")
+
+        # Optional: Early stopping
+        if patience and epochs_without_improvement >= patience:
+            logger.warning(f"Early stopping triggered after {epoch + 1} epochs.")
+            break
+
+    writer.close()
+    logger.info(f"--- Finished U-Net Training for fold. Best validation Dice: {best_val_dice:.4f} ---")
+    return model_output_path
 
 def main():
     """
@@ -478,4 +633,25 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    """This block allows the script to be run standalone for testing, but it's not used in the CV pipeline."""
+    parser = argparse.ArgumentParser(description="Standalone U-Net Trainer")
+    parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Path to config file.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    if config:
+        logger = setup_logging(Path(config["paths"]["logs"]), "unet_standalone_train")
+        log_config(config, logger)
+
+        # This is a dummy run for testing purposes. It splits the data and runs one training.
+        dataset_dir = Path(config["paths"]["segmentation_dataset"])
+        all_stems = [p.stem for p in (dataset_dir / "images").glob("*.png")]
+        random.shuffle(all_stems)
+        split_idx = int(len(all_stems) * 0.8)
+        train_stems = all_stems[:split_idx]
+        val_stems = all_stems[split_idx:]
+
+        output_path = Path("models/unet_standalone_test.pt")
+        output_path.parent.mkdir(exist_ok=True)
+
+        run_unet_training(config, logger, train_stems, val_stems, output_path)

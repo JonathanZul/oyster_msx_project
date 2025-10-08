@@ -11,6 +11,7 @@ import argparse
 # Import our standardized utilities
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging, log_config
+from src.utils.wsi_utils import find_matching_wsi_path
 
 
 # --- Helper Functions ---
@@ -140,14 +141,14 @@ def separate_touching_objects(binary_mask, config, logger, output_dir):
     return markers
 
 
-def process_single_wsi(wsi_path, config, logger):
+def process_single_wsi(wsi_path: Path, config: dict, logger, base_output_dir: Path):
     """
     Processes a single WSI to find and save oyster instance masks using a robust
     watershed and fragment merging pipeline.
     """
     logger.info(f"--- Processing Image: {wsi_path.name} ---")
     clean_stem = wsi_path.stem.replace('.ome', '')
-    slide_output_dir = Path(config['paths']['oyster_masks']) / clean_stem
+    slide_output_dir = base_output_dir / clean_stem
     slide_output_dir.mkdir(exist_ok=True, parents=True)
     logger.info(f"Masks will be saved to: {slide_output_dir}")
 
@@ -248,49 +249,99 @@ def process_single_wsi(wsi_path, config, logger):
             viz_img[mask > 0, :] = viz_img[mask > 0, :] * 0.5 + color * 0.5
         save_debug_image(viz_img, "99_final_segmentation", slide_output_dir, config)
 
-def main():
-    """Main function to execute the oyster segmentation process."""
-    parser = argparse.ArgumentParser(description="Stage 00: Oyster Instance Segmentation")
-    parser.add_argument(
-        "-c", "--config",
-        type=str,
-        default="config.yaml",
-        help="Path to the master configuration file."
-    )
-    args = parser.parse_args()
 
-    config = load_config(args.config)
-    if not config:
-        return
+def run_watershed_pipeline(config: dict, logger, file_stems: list[str] | None = None, output_override_dir: Path | None = None):
+    """
+    Main execution logic for the classical Watershed segmentation pipeline.
 
-    logger = setup_logging(Path(config["paths"]["logs"]), "00_segment_oysters")
-
-    log_config(config, logger)
-
-    logger.info("--- Starting Oyster Segmentation Script (Script 00) ---")
-
-    # Find all WSI files to process
+    Args:
+        config (dict): The full project configuration.
+        logger: The logger instance.
+        file_stems (list[str] | None): An optional list of slide stems to process.
+                                      If None, all slides in the raw_wsis dir will be processed.
+    """
+    logger.info("--- Running Classical Watershed Segmentation Pipeline ---")
     wsi_dir = Path(config["paths"]["raw_wsis"])
-    all_paths = (
-            list(wsi_dir.glob("*.tif")) +
-            list(wsi_dir.glob("*.tiff")) +
-            list(wsi_dir.glob("*.vsi"))
-    )
-    # This list comprehension filters out any path whose name starts with '._'
-    wsi_paths = [p for p in all_paths if not p.name.startswith('._')]
+
+    base_output_dir = output_override_dir if output_override_dir is not None else Path(config["paths"]["oyster_masks"])
+
+    if file_stems:
+        wsi_paths = []
+        for stem in file_stems:
+            # Use a helper to find the full WSI path for each stem
+            annot_placeholder = wsi_dir / f"{stem}.geojson"  # Create a dummy path for the helper
+            wsi_path = find_matching_wsi_path(annot_placeholder, wsi_dir)
+            if wsi_path:
+                wsi_paths.append(wsi_path)
+        logger.info(f"Processing a specific list of {len(wsi_paths)} slides.")
+    else:
+        logger.info("Processing all slides found in the raw WSI directory.")
+        wsi_paths = [p for p in wsi_dir.iterdir() if
+                     p.suffix.lower() in [".tif", ".tiff", ".vsi"] and not p.name.startswith('.')]
 
     if not wsi_paths:
-        logger.error(f"No WSI files found in '{wsi_dir}'. Exiting.")
+        logger.error(f"No WSI files found to process.")
         return
 
-    logger.info(f"Found {len(wsi_paths)} WSI files to process.")
-
-    # Process each WSI
     for wsi_path in wsi_paths:
-        process_single_wsi(wsi_path, config, logger)
+        # The original 'process_single_wsi' function can be called directly
+        process_single_wsi(wsi_path, config, logger, base_output_dir)
 
-    logger.info("--- Oyster Segmentation Script Finished ---")
+    logger.info("--- Classical Watershed Segmentation Finished ---")
+
+
+# def main():
+#     """Main function to execute the oyster segmentation process."""
+#     parser = argparse.ArgumentParser(description="Stage 00: Oyster Instance Segmentation")
+#     parser.add_argument(
+#         "-c", "--config",
+#         type=str,
+#         default="config.yaml",
+#         help="Path to the master configuration file."
+#     )
+#     args = parser.parse_args()
+#
+#     config = load_config(args.config)
+#     if not config:
+#         return
+#
+#     logger = setup_logging(Path(config["paths"]["logs"]), "00_segment_oysters")
+#
+#     log_config(config, logger)
+#
+#     logger.info("--- Starting Oyster Segmentation Script (Script 00) ---")
+#
+#     # Find all WSI files to process
+#     wsi_dir = Path(config["paths"]["raw_wsis"])
+#     all_paths = (
+#             list(wsi_dir.glob("*.tif")) +
+#             list(wsi_dir.glob("*.tiff")) +
+#             list(wsi_dir.glob("*.vsi"))
+#     )
+#     # This list comprehension filters out any path whose name starts with '._'
+#     wsi_paths = [p for p in all_paths if not p.name.startswith('._')]
+#
+#     if not wsi_paths:
+#         logger.error(f"No WSI files found in '{wsi_dir}'. Exiting.")
+#         return
+#
+#     logger.info(f"Found {len(wsi_paths)} WSI files to process.")
+#
+#     # Process each WSI
+#     for wsi_path in wsi_paths:
+#         process_single_wsi(wsi_path, config, logger)
+#
+#     logger.info("--- Oyster Segmentation Script Finished ---")
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+    parser = argparse.ArgumentParser(description="Stage 00: Classical Oyster Segmentation")
+    parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Path to the config file.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    if config:
+        logger = setup_logging(Path(config["paths"]["logs"]), "00_segment_oysters_classical")
+        log_config(config, logger)
+        run_watershed_pipeline(config, logger)
