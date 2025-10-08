@@ -343,7 +343,7 @@ def run_unet_training(
     logger.info(f"--- Starting U-Net Training for a single fold ---")
     logger.info(f"Training on {len(train_stems)} samples, validating on {len(val_stems)} samples.")
 
-    seg_config = config["ml_segmentation"]  # Use the archived segmentation config
+    seg_config = config["ml_segmentation"]
     paths = config["paths"]
 
     # --- Device and TensorBoard Setup ---
@@ -391,7 +391,6 @@ def run_unet_training(
     if not train_images or not val_images:
         logger.critical(
             "Could not find any valid data for training or validation after path verification. Aborting fold.")
-        # Return a sentinel value to indicate failure
         return None
 
     # Define transforms
@@ -427,32 +426,50 @@ def run_unet_training(
         return 0.5 * dice_loss_fn(p, t) + 0.5 * (bce_loss_fn(p, t) * r).sum() / (r.sum() + 1e-6)
 
     loss_fn = masked_loss
-
     scaler = torch.amp.GradScaler(device.type, enabled=(device.type == 'cuda'))
-    # --- Training Loop ---
-    best_val_loss = float("inf")
-    epochs = seg_config.get("epochs_per_fold", 20)  # Use a specific key for CV
 
-    # For simplicity in this callable function, we'll do a single-phase training.
-    # The two-phase logic can be re-added if needed, but this is cleaner for a CV script.
+    # --- Training Loop ---
+    # CHANGE: Track best Dice score instead of best loss
+    best_val_dice = 0.0  # Higher is better for Dice
+    epochs = seg_config.get("epochs_per_fold", 20)
+    patience = seg_config.get("early_stopping_patience", 10)
+    epochs_without_improvement = 0
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=seg_config["learning_rate"])
 
     for epoch in range(epochs):
         logger.info(f"\n--- Fold Training Epoch {epoch + 1}/{epochs} ---")
         train_loss = train_one_epoch(train_loader, model, optimizer, loss_fn, device, scaler)
         val_metrics = validate(val_loader, model, loss_fn, device)
-        val_loss = val_metrics["loss"]
 
+        val_loss = val_metrics["loss"]
+        val_dice = val_metrics["dice"]
+        val_iou = val_metrics["iou"]
+
+        # Log to TensorBoard
         writer.add_scalar("Loss/train_fold", train_loss, epoch)
         writer.add_scalar("Loss/val_fold", val_loss, epoch)
+        writer.add_scalar("Metrics/val_dice", val_dice, epoch)
+        writer.add_scalar("Metrics/val_iou", val_iou, epoch)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # CHANGE: Save model based on best Dice score (higher is better)
+        if val_dice > best_val_dice:
+            best_val_dice = val_dice
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), model_output_path)
-            logger.info(f"Validation loss improved. Saved best model for this fold to {model_output_path}")
+            logger.info(f"✓ Validation Dice improved to {val_dice:.4f}. Saved best model to {model_output_path}")
+        else:
+            epochs_without_improvement += 1
+            logger.info(f"Validation Dice did not improve (current: {val_dice:.4f}, best: {best_val_dice:.4f}). "
+                        f"Patience: {epochs_without_improvement}/{patience}")
+
+        # Optional: Early stopping
+        if patience and epochs_without_improvement >= patience:
+            logger.warning(f"Early stopping triggered after {epoch + 1} epochs.")
+            break
 
     writer.close()
-    logger.info(f"--- Finished U-Net Training for fold. Best validation loss: {best_val_loss:.4f} ---")
+    logger.info(f"--- Finished U-Net Training for fold. Best validation Dice: {best_val_dice:.4f} ---")
     return model_output_path
 
 def main():

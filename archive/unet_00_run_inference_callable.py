@@ -102,6 +102,8 @@ def run_unet_inference(
         probabilities = torch.sigmoid(logits)
         binary_masks_tensor = (probabilities > seg_config["confidence_threshold"]).cpu()
 
+        final_cleaned_masks = []
+
         # Process each class channel from the output
         for class_name, class_idx in seg_config["classes"].items():
             channel = class_idx - 1
@@ -112,10 +114,33 @@ def run_unet_inference(
             # Use the same cleaning logic as the SAM pipeline for a fair comparison
             cleaned_mask = clean_mask(mask_resized, seg_config.get("min_mask_area", 5000))
 
+            # Store cleaned mask for visualization
+            final_cleaned_masks.append(cleaned_mask)
+
             oyster_id = class_name.split(" ")[-1]
             mask_filename = slide_output_dir / f"oyster_{oyster_id}_mask.png"
             cv2.imwrite(str(mask_filename), cleaned_mask)
             logger.info(f"Saved U-Net mask to {mask_filename}")
+
+        if seg_config.get("save_visualization", False):
+            logger.info("Creating composite visualization for U-Net output...")
+            viz_image = overview_img.copy()
+            colors = [(255, 0, 0), (0, 0, 255)]  # Blue, Red
+
+            for i, cleaned_mask in enumerate(final_cleaned_masks):
+                if np.sum(cleaned_mask) > 0:
+                    color = colors[i % len(colors)]
+                    colored_overlay = np.zeros_like(viz_image)
+                    colored_overlay[cleaned_mask > 0] = color
+                    viz_image = cv2.addWeighted(viz_image, 1.0, colored_overlay, 0.5, 0)
+                    contours, _ = cv2.findContours(cleaned_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    cv2.drawContours(viz_image, contours, -1, color, 2)
+
+            # Save the visualization in the main slide output directory
+            viz_filename = slide_output_dir / f"visualization_unet_{wsi_path.stem}.png"
+            # We use cv2.imwrite directly instead of _save_debug_image to save at full resolution
+            cv2.imwrite(str(viz_filename), cv2.cvtColor(viz_image, cv2.COLOR_RGB2BGR))
+            logger.info(f"Saved U-Net visualization to {viz_filename}")
 
     logger.info("--- U-Net Inference Finished ---")
 
