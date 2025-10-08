@@ -4,6 +4,7 @@
 .venv/
 __pycache__/
 *.pyc
+.python-version
 
 # 2. Data Files
 data/raw/
@@ -21,6 +22,7 @@ models/
 outputs/
 logs/
 hpc_outputs/
+verification_outputs/
 
 # 5. IDE & OS-specific files
 .DS_Store
