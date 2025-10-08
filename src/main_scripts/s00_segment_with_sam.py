@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging, log_config
-from src.utils.wsi_utils import extract_downsampled_overview
+from src.utils.wsi_utils import extract_downsampled_overview, find_matching_wsi_path
 
 
 # --- Helper Functions ---
@@ -588,7 +588,7 @@ def select_best_mask(
     return best_mask, best_mask_idx
 
 
-def process_single_wsi(wsi_path: Path, predictor: SamPredictor, config: dict, logger):
+def process_single_wsi(wsi_path: Path, predictor: SamPredictor, config: dict, logger, base_output_dir: Path):
     """
     Processes a single WSI file to generate SAM segmentation masks for oysters.
 
@@ -610,7 +610,7 @@ def process_single_wsi(wsi_path: Path, predictor: SamPredictor, config: dict, lo
     Returns:
         None
     """
-    output_dir = Path(config["paths"]["oyster_masks"]) / wsi_path.stem.replace(".ome", "")
+    output_dir = base_output_dir / wsi_path.stem.replace(".ome", "")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # generate_prompts now returns the low-res proxy mask as well.
@@ -722,6 +722,59 @@ def process_single_wsi(wsi_path: Path, predictor: SamPredictor, config: dict, lo
     _save_debug_image(viz_image, "05_final_sam_segmentation", output_dir, config["sam_segmentation"])
 
 
+def run_sam_pipeline(config: dict, logger, file_stems: list[str] | None = None, output_override_dir: Path | None = None):
+    """
+    Main execution logic for the SAM-based segmentation pipeline.
+
+    Args:
+        config (dict): The full project configuration.
+        logger: The logger instance.
+        file_stems (list[str] | None): An optional list of slide stems to process.
+                                      If None, all slides in the raw_wsis dir will be processed.
+    """
+    logger.info("--- Running Hybrid SAM Segmentation Pipeline ---")
+
+    base_output_dir = output_override_dir if output_override_dir is not None else Path(config["paths"]["oyster_masks"])
+
+    # --- Device and Model Setup ---
+    device_str = config["training"].get("device", "cpu")
+    if device_str == "cuda" and not torch.cuda.is_available():
+        logger.warning("CUDA not available. Falling back to CPU.")
+        device_str = "cpu"
+    elif device_str == "mps" and not torch.backends.mps.is_available():
+        logger.warning("MPS not available. Falling back to CPU.")
+        device_str = "cpu"
+    device = torch.device(device_str)
+
+    predictor = initialize_sam_predictor(config["sam_segmentation"], device, logger)
+    if predictor is None:
+        logger.critical("Could not initialize SAM predictor. Aborting.")
+        return
+
+    # --- Find WSIs and Run Inference ---
+    wsi_dir = Path(config["paths"]["raw_wsis"])
+    if file_stems:
+        wsi_paths = []
+        for stem in file_stems:
+            annot_placeholder = wsi_dir / f"{stem}.geojson"
+            wsi_path = find_matching_wsi_path(annot_placeholder, wsi_dir)
+            if wsi_path:
+                wsi_paths.append(wsi_path)
+        logger.info(f"Processing a specific list of {len(wsi_paths)} slides.")
+    else:
+        logger.info("Processing all slides found in the raw WSI directory.")
+        wsi_paths = [p for p in wsi_dir.iterdir() if
+                     p.suffix.lower() in [".tif", ".tiff", ".vsi"] and not p.name.startswith('.')]
+
+    if not wsi_paths:
+        logger.error(f"No WSI files found to process.");
+        return
+
+    for wsi_path in tqdm(wsi_paths, desc="Segmenting WSIs with SAM"):
+        process_single_wsi(wsi_path, predictor, config, logger, base_output_dir=base_output_dir)
+
+    logger.info("--- Hybrid SAM Segmentation Finished ---")
+
 def main():
     """
     Main function for the SAM-based segmentation pipeline.
@@ -770,4 +823,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    """This block allows the script to be run standalone as before."""
+    parser = argparse.ArgumentParser(description="Stage 00: Segment Oysters with SAM")
+    parser.add_argument("-c", "--config", type=str, default="config.yaml", help="Path to the config file.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    if config:
+        logger = setup_logging(Path(config["paths"]["logs"]), "00_segment_with_sam")
+        log_config(config, logger)
+        run_sam_pipeline(config, logger)

@@ -70,7 +70,11 @@ def rasterize_ground_truth(geojson_path: Path, target_shape: tuple, wsi_dims: tu
             coords_scaled[:, 0] *= scale_x
             coords_scaled[:, 1] *= scale_y
 
-            cv2.fillPoly(gt_mask[:, :, channel_idx], [coords_scaled.astype(np.int32)], 1)
+            # Create a C-contiguous copy of the slice for OpenCV
+            mask_channel_slice = gt_mask[:, :, channel_idx].copy()
+            cv2.fillPoly(mask_channel_slice, [coords_scaled.astype(np.int32)], 1)
+            # Assign the modified copy back to the main mask array
+            gt_mask[:, :, channel_idx] = mask_channel_slice
 
         return gt_mask
     except Exception as e:
