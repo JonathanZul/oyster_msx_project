@@ -107,7 +107,7 @@ training:
 # Parameters controlling the `03_run_inference.py` script.
 # -------------------------------------------------------------------
 inference:
-  model_checkpoint: "models/yolov11m_msx_oyster_run7/weights/best.pt" # The path to your best trained model.
+  model_checkpoint: "models/yolo11m_msx_oyster_run/weights/best.pt" # The path to your best trained model.
   patch_overlap: 0.2 # 20% overlap when creating patches for inference.
   conf_threshold: 0.25 # Confidence threshold for predictions.
 
