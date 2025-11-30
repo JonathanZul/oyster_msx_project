@@ -80,6 +80,7 @@ evaluation:
 dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
   train_val_split: 0.8 # 80% for training, 20% for validation.
+  append_mode: false # If true, new patches are added to the existing dataset instead of wiping it.
   classes:
     "MSX Plasmodia": 0
     "MSX Spores": 1
@@ -95,6 +96,7 @@ dataset_creation:
 # -------------------------------------------------------------------
 training:
   yolo_model: "yolo11n.pt" # The pre-trained model to start from.
+  use_latest_model: false # If true, automatically find and use the most recent best.pt from models/
   epochs: 100
   batch_size: 16
   device: "mps" # Options: "cpu", "cuda:0", "mps" (for Apple Silicon)

@@ -20,11 +20,17 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
-def setup_directories(base_path: Path, logger):
-    """Cleans and creates the necessary directory structure for the YOLO dataset."""
+def setup_directories(base_path: Path, append_mode: bool, logger):
+    """
+    Cleans and creates the necessary directory structure for the YOLO dataset.
+    If append_mode is True, it will NOT delete the existing directory.
+    """
     if base_path.exists():
-        logger.info(f"Removing existing dataset directory: {base_path}")
-        shutil.rmtree(base_path)
+        if not append_mode:
+            logger.info(f"Removing existing dataset directory: {base_path}")
+            shutil.rmtree(base_path)
+        else:
+            logger.info(f"Append mode enabled. Keeping existing dataset directory: {base_path}")
 
     logger.info(f"Creating new dataset directory structure at: {base_path}")
     (base_path / "images/train").mkdir(parents=True, exist_ok=True)
@@ -233,7 +239,8 @@ def main():
     logger.info("--- Starting Dataset Creation Script ---")
 
     yolo_dataset_path = Path(config["paths"]["yolo_dataset"])
-    setup_directories(yolo_dataset_path, logger)
+    append_mode = config["dataset_creation"].get("append_mode", False)
+    setup_directories(yolo_dataset_path, append_mode, logger)
 
     qupath_exports_dir = Path(config["paths"]["qupath_exports"])
     geojson_files = list(qupath_exports_dir.glob("*.geojson"))

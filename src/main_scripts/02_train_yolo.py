@@ -55,6 +55,30 @@ def create_yolo_dataset_config(config: dict, logger):
         return None
 
 
+def find_latest_best_model(model_dir: Path, logger):
+    """
+    Finds the most recently modified 'best.pt' file in the model directory.
+    
+    Args:
+        model_dir (Path): The directory to search in.
+        logger: The logger instance.
+        
+    Returns:
+        Path: The path to the latest best.pt file, or None if not found.
+    """
+    if not model_dir.exists():
+        return None
+        
+    # Search for all best.pt files recursively
+    candidates = list(model_dir.rglob("best.pt"))
+    if not candidates:
+        return None
+    
+    # Sort by modification time, newest first
+    latest_model = max(candidates, key=lambda p: p.stat().st_mtime)
+    return latest_model
+
+
 def main():
     """
     Main function to execute the YOLO model training process.
@@ -86,9 +110,29 @@ def main():
     # 2. Initialize the YOLO model
     # This will download the pre-trained weights if they don't exist
     train_params = config['training']
+    
+    model_to_load = train_params['yolo_model']
+    
+    # Check if we should auto-resume from the latest model
+    if train_params.get('use_latest_model', False):
+        model_output_dir = Path(config['paths']['model_output_dir'])
+        # Ensure we are looking relative to project root if path is relative
+        if not model_output_dir.is_absolute():
+            project_root = Path(__file__).resolve().parents[2]
+            model_output_dir = project_root / model_output_dir
+            
+        logger.info(f"Searching for latest model in: {model_output_dir}")
+        latest_model = find_latest_best_model(model_output_dir, logger)
+        
+        if latest_model:
+            logger.info(f"Found latest model: {latest_model}")
+            model_to_load = str(latest_model)
+        else:
+            logger.warning("use_latest_model is True, but no existing models found. Starting from base model.")
+
     try:
-        logger.info(f"Initializing YOLO model with pre-trained weights: {train_params['yolo_model']}")
-        model = YOLO(train_params['yolo_model'])
+        logger.info(f"Initializing YOLO model with weights: {model_to_load}")
+        model = YOLO(model_to_load)
     except Exception as e:
         logger.critical(f"Failed to initialize YOLO model. Error: {e}", exc_info=True)
         return
