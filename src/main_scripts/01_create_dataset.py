@@ -35,8 +35,10 @@ def setup_directories(base_path: Path, append_mode: bool, logger):
     logger.info(f"Creating new dataset directory structure at: {base_path}")
     (base_path / "images/train").mkdir(parents=True, exist_ok=True)
     (base_path / "images/val").mkdir(parents=True, exist_ok=True)
+    (base_path / "images/test").mkdir(parents=True, exist_ok=True)
     (base_path / "labels/train").mkdir(parents=True, exist_ok=True)
     (base_path / "labels/val").mkdir(parents=True, exist_ok=True)
+    (base_path / "labels/test").mkdir(parents=True, exist_ok=True)
 
 
 def get_oyster_id_for_annotation(annotation, parent_masks, downsample_factor, logger):
@@ -75,8 +77,73 @@ def get_oyster_id_for_annotation(annotation, parent_masks, downsample_factor, lo
     return None
 
 
+def split_slides(all_slides, config, logger):
+    """
+    Assigns slides to train, val, and test sets based on config.
+    
+    Args:
+        all_slides (list): List of slide names (stems).
+        config (dict): Configuration dictionary.
+        logger: Logger instance.
+        
+    Returns:
+        dict: Mapping of slide_name -> subset ('train', 'val', 'test')
+    """
+    val_slides_config = set(config['dataset_creation'].get('validation_slides', []))
+    test_slides_config = set(config['dataset_creation'].get('test_slides', []))
+    
+    slide_assignments = {}
+    remaining_slides = []
+    
+    # 1. Assign explicitly defined slides
+    for slide in all_slides:
+        if slide in val_slides_config:
+            slide_assignments[slide] = 'val'
+        elif slide in test_slides_config:
+            slide_assignments[slide] = 'test'
+        else:
+            remaining_slides.append(slide)
+            
+    # 2. Randomly split the rest if needed
+    if remaining_slides:
+        # Check if we need to split remaining slides or if they are all training
+        # If explicit lists were provided, usually the rest are implicit training.
+        # But if lists were empty, we do a full random split.
+        
+        # Logic: If BOTH lists are empty, do full random split.
+        # If at least one list is provided, assume the user is managing splits manually 
+        # and put everything else in train (or warn?). 
+        # Let's stick to the plan: if lists empty, use ratios.
+        
+        if not val_slides_config and not test_slides_config:
+            random.shuffle(remaining_slides)
+            n_total = len(remaining_slides)
+            ratios = config['dataset_creation'].get('train_val_test_split', [0.7, 0.15, 0.15])
+            
+            n_train = int(n_total * ratios[0])
+            n_val = int(n_total * ratios[1])
+            # n_test is the rest
+            
+            train_set = remaining_slides[:n_train]
+            val_set = remaining_slides[n_train:n_train+n_val]
+            test_set = remaining_slides[n_train+n_val:]
+            
+            for s in train_set: slide_assignments[s] = 'train'
+            for s in val_set: slide_assignments[s] = 'val'
+            for s in test_set: slide_assignments[s] = 'test'
+            
+            logger.info(f"Random Split: {len(train_set)} Train, {len(val_set)} Val, {len(test_set)} Test")
+        else:
+            # Explicit mode: everything else is train
+            for s in remaining_slides:
+                slide_assignments[s] = 'train'
+            logger.info(f"Explicit Split: {len(remaining_slides)} assigned to Train (remainder).")
+            
+    return slide_assignments
+
+
 def process_single_wsi(
-    wsi_path: Path, geojson_path: Path, parent_mask_paths: list, config: dict, logger
+    wsi_path: Path, geojson_path: Path, parent_mask_paths: list, subset: str, config: dict, logger
 ):
     """
     Processes a single WSI and its annotations to generate oyster-aware patches.
@@ -178,12 +245,13 @@ def process_single_wsi(
                     elif image_patch.ndim == 2:
                         image_patch = cv2.cvtColor(image_patch, cv2.COLOR_GRAY2BGR)
 
-                    subset = (
-                        "train"
-                        if random.random()
-                        < config["dataset_creation"]["train_val_split"]
-                        else "val"
-                    )
+                    # subset is now passed in as an argument
+                    # subset = (
+                    #     "train"
+                    #     if random.random()
+                    #     < config["dataset_creation"]["train_val_split"]
+                    #     else "val"
+                    # )
 
                     # --- NEW: Create a more descriptive filename ---
                     patch_filename = f"{wsi_path.stem}_oyster_{oyster_id}_patch_x{p_x_min}_y{p_y_min}"
@@ -249,9 +317,20 @@ def main():
         return
 
     logger.info(f"Found {len(geojson_files)} GeoJSON files to process.")
+    
+    # --- NEW: Determine Slide Splits ---
+    all_slide_names = [p.stem for p in geojson_files]
+    slide_assignments = split_slides(all_slide_names, config, logger)
+    
+    logger.info("Slide Assignments:")
+    for s, assignment in slide_assignments.items():
+        logger.info(f"  {s}: {assignment}")
+    # -----------------------------------
 
     for geojson_path in geojson_files:
         wsi_name_stem = geojson_path.stem
+        
+        subset = slide_assignments.get(wsi_name_stem, 'train') # Default to train if something goes wrong
 
         # Find matching WSI file
         possible_wsi_paths = list(
@@ -285,7 +364,7 @@ def main():
             continue
 
         logger.info(f"Found {len(parent_mask_paths)} oyster masks for this slide.")
-        process_single_wsi(wsi_path, geojson_path, parent_mask_paths, config, logger)
+        process_single_wsi(wsi_path, geojson_path, parent_mask_paths, subset, config, logger)
 
     logger.info("--- Dataset Creation Script Finished ---")
 

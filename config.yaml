@@ -79,7 +79,16 @@ evaluation:
 # -------------------------------------------------------------------
 dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
-  train_val_split: 0.8 # 80% for training, 20% for validation.
+  # train_val_test_split: [train_fraction, val_fraction, test_fraction]
+  # If validation_slides or test_slides are empty, this ratio is used to split the SLIDES (not patches).
+  train_val_test_split: [0.70, 0.15, 0.15] 
+  
+  # Explicitly define which slides go to validation and test.
+  # If populated, these override the random split for Val/Test.
+  # Format: ["SlideName1", "SlideName2"] (without extension)
+  validation_slides: [] 
+  test_slides: []
+
   append_mode: false # If true, new patches are added to the existing dataset instead of wiping it.
   classes:
     "MSX Plasmodia": 0
