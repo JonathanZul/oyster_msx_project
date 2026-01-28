@@ -28,7 +28,7 @@ def setup_directories(base_path: Path, append_mode: bool, logger):
     if base_path.exists():
         if not append_mode:
             logger.info(f"Removing existing dataset directory: {base_path}")
-            shutil.rmtree(base_path)
+            shutil.rmtree(base_path, ignore_errors=True)
         else:
             logger.info(f"Append mode enabled. Keeping existing dataset directory: {base_path}")
 
@@ -80,65 +80,70 @@ def get_oyster_id_for_annotation(annotation, parent_masks, downsample_factor, lo
 def split_slides(all_slides, config, logger):
     """
     Assigns slides to train, val, and test sets based on config.
-    
+
     Args:
         all_slides (list): List of slide names (stems).
         config (dict): Configuration dictionary.
         logger: Logger instance.
-        
+
     Returns:
         dict: Mapping of slide_name -> subset ('train', 'val', 'test')
     """
+    train_slides_config = set(config['dataset_creation'].get('train_slides', []))
     val_slides_config = set(config['dataset_creation'].get('validation_slides', []))
     test_slides_config = set(config['dataset_creation'].get('test_slides', []))
-    
+
     slide_assignments = {}
     remaining_slides = []
-    
-    # 1. Assign explicitly defined slides
+
+    # 1. Assign explicitly defined slides (train takes priority over val/test)
     for slide in all_slides:
-        if slide in val_slides_config:
+        if slide in train_slides_config:
+            slide_assignments[slide] = 'train'
+        elif slide in val_slides_config:
             slide_assignments[slide] = 'val'
         elif slide in test_slides_config:
             slide_assignments[slide] = 'test'
         else:
             remaining_slides.append(slide)
-            
+
     # 2. Randomly split the rest if needed
     if remaining_slides:
-        # Check if we need to split remaining slides or if they are all training
-        # If explicit lists were provided, usually the rest are implicit training.
-        # But if lists were empty, we do a full random split.
-        
-        # Logic: If BOTH lists are empty, do full random split.
-        # If at least one list is provided, assume the user is managing splits manually 
-        # and put everything else in train (or warn?). 
-        # Let's stick to the plan: if lists empty, use ratios.
-        
-        if not val_slides_config and not test_slides_config:
+        # Logic: If ALL explicit lists are empty, do full random split.
+        # If at least one list is provided, assume the user is managing splits manually
+        # and put everything else in train.
+
+        if not train_slides_config and not val_slides_config and not test_slides_config:
             random.shuffle(remaining_slides)
             n_total = len(remaining_slides)
             ratios = config['dataset_creation'].get('train_val_test_split', [0.7, 0.15, 0.15])
-            
+
             n_train = int(n_total * ratios[0])
             n_val = int(n_total * ratios[1])
             # n_test is the rest
-            
+
             train_set = remaining_slides[:n_train]
             val_set = remaining_slides[n_train:n_train+n_val]
             test_set = remaining_slides[n_train+n_val:]
-            
+
             for s in train_set: slide_assignments[s] = 'train'
             for s in val_set: slide_assignments[s] = 'val'
             for s in test_set: slide_assignments[s] = 'test'
-            
+
             logger.info(f"Random Split: {len(train_set)} Train, {len(val_set)} Val, {len(test_set)} Test")
         else:
             # Explicit mode: everything else is train
             for s in remaining_slides:
                 slide_assignments[s] = 'train'
-            logger.info(f"Explicit Split: {len(remaining_slides)} assigned to Train (remainder).")
-            
+            logger.info(f"Explicit Split: {len(remaining_slides)} remaining slides assigned to Train.")
+
+    # Log explicit assignments
+    n_explicit_train = len(train_slides_config & set(all_slides))
+    n_explicit_val = len(val_slides_config & set(all_slides))
+    n_explicit_test = len(test_slides_config & set(all_slides))
+    if n_explicit_train or n_explicit_val or n_explicit_test:
+        logger.info(f"Explicit Assignments: {n_explicit_train} Train, {n_explicit_val} Val, {n_explicit_test} Test")
+
     return slide_assignments
 
 
@@ -157,7 +162,7 @@ def process_single_wsi(
 
             zarr_store = tif.series[0].aszarr()
             zarr_group = zarr.open(zarr_store, mode='r')
-            zarr_slicer = zarr_group[0]
+            zarr_slicer = zarr_group["0"]
             logger.info(f"Successfully created Zarr slicer for Level 0.")
 
             # Load parent masks and calculate downsample factor
@@ -245,19 +250,18 @@ def process_single_wsi(
                     elif image_patch.ndim == 2:
                         image_patch = cv2.cvtColor(image_patch, cv2.COLOR_GRAY2BGR)
 
-                    # subset is now passed in as an argument
-                    # subset = (
-                    #     "train"
-                    #     if random.random()
-                    #     < config["dataset_creation"]["train_val_split"]
-                    #     else "val"
-                    # )
+                    # Apply patch-level val split if configured and this is a training slide
+                    patch_subset = subset  # Local copy for this patch
+                    patch_val_split = config["dataset_creation"].get("patch_level_val_split", 0)
+                    if patch_subset == "train" and patch_val_split > 0:
+                        if random.random() < patch_val_split:
+                            patch_subset = "val"
 
                     # --- NEW: Create a more descriptive filename ---
                     patch_filename = f"{wsi_path.stem}_oyster_{oyster_id}_patch_x{p_x_min}_y{p_y_min}"
 
                     cv2.imwrite(
-                        str(yolo_base_path / f"images/{subset}/{patch_filename}.png"),
+                        str(yolo_base_path / f"images/{patch_subset}/{patch_filename}.png"),
                         image_patch,
                     )
 
@@ -269,7 +273,7 @@ def process_single_wsi(
                     yolo_height = (l_y_max - l_y_min) / patch_size
 
                     label_path = (
-                        yolo_base_path / f"labels/{subset}/{patch_filename}.txt"
+                        yolo_base_path / f"labels/{patch_subset}/{patch_filename}.txt"
                     )
                     with open(label_path, "w") as f_label:
                         f_label.write(

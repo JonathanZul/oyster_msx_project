@@ -8,7 +8,7 @@
 paths:
   # Input data
   raw_wsis: "/Volumes/One Touch/MSX Project/data/exports/wsis"
-  qupath_exports: "/Volumes/One Touch/MSX Project/data/raw/qupath_exports"
+  qupath_exports: "/Volumes/MSX_Project/qupath-exports/2026-01-16/qupath_exports"
 
   # Oyster instance masks
   oyster_masks: "/Volumes/One Touch/MSX Project/data/interim/oyster_masks"
@@ -81,24 +81,31 @@ dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
   # train_val_test_split: [train_fraction, val_fraction, test_fraction]
   # If validation_slides or test_slides are empty, this ratio is used to split the SLIDES (not patches).
-  train_val_test_split: [0.70, 0.15, 0.15] 
-  
-  # Explicitly define which slides go to validation and test.
-  # If populated, these override the random split for Val/Test.
+  train_val_test_split: [0.70, 0.15, 0.15]
+
+  # Explicitly define which slides go to each set.
+  # If populated, these override the random split for that set.
   # Format: ["SlideName1", "SlideName2"] (without extension)
-  validation_slides: [] 
+  train_slides: ["U5014-25 E_01"]  # Bootstrap phase: manually annotated slide
+  validation_slides: []
   test_slides: []
+
+  # When true, splits patches within training slides into train/val sets
+  # Useful for bootstrap phase when you only have one annotated slide
+  patch_level_val_split: 0.15  # 15% of patches go to validation (0 to disable)
 
   append_mode: false # If true, new patches are added to the existing dataset instead of wiping it.
   classes:
-    "MSX Plasmodia": 0
-    "MSX Spores": 1
-    "Waste": 2
-    "Hemocyte": 3
-    "Ignore": 4
-    "Potential Confuser": 5
-    "Stain": 6
-    "?": 7
+    "Distractor": 0
+    "Plasmodia": 1
+    # "MSX Plasmodia": 0
+    # "MSX Spores": 1
+    # "Waste": 2
+    # "Hemocyte": 3
+    # "Ignore": 4
+    # "Potential Confuser": 5
+    # "Stain": 6
+    # "?": 7
 
 # 4. Training Parameters
 # Parameters controlling the `02_train_yolo.py` script.
@@ -116,9 +123,9 @@ training:
 # Parameters controlling the `03_run_inference.py` script.
 # -------------------------------------------------------------------
 inference:
-  model_checkpoint: "models/yolo11m_msx_oyster_run/weights/best.pt" # The path to your best trained model.
+  model_checkpoint: "models/yolo11n_msx_oyster_run2/weights/best.pt" # The path to your best trained model.
   patch_overlap: 0.2 # 20% overlap when creating patches for inference.
-  conf_threshold: 0.25 # Confidence threshold for predictions.
+  conf_threshold: 0.50 # Confidence threshold for predictions.
 
 
 # ===================================================================

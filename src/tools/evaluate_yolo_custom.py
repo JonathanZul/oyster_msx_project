@@ -113,7 +113,21 @@ def evaluate_model(model_path, dataset_path, config, logger):
             "pred_scores": pred_scores
         })
 
-    logger.info("Inference complete. Calculating metrics...")
+    # --- Standard YOLO Validation (mAP) ---
+    logger.info("Running standard YOLO validation...")
+    try:
+        # Run validation on the dataset defined in dataset.yaml
+        # We assume dataset.yaml is in the dataset_path
+        val_results = model.val(data=dataset_path / 'dataset.yaml', split='val', verbose=False)
+        map50 = val_results.box.map50
+        map50_95 = val_results.box.map
+        logger.info(f"Standard Metrics: mAP50={map50:.4f}, mAP50-95={map50_95:.4f}")
+    except Exception as e:
+        logger.error(f"Failed to run standard YOLO validation: {e}")
+        map50 = 0.0
+        map50_95 = 0.0
+
+    logger.info("Inference complete. Calculating custom metrics...")
     
     # --- Calculate FROC and NPV ---
     # We need to sweep thresholds
@@ -121,6 +135,9 @@ def evaluate_model(model_path, dataset_path, config, logger):
     
     froc_data = [] # List of (FP_per_mm2, Sensitivity)
     npv_data = [] # List of (Threshold, NPV)
+    
+    # Store all metrics for the report
+    all_metrics = [] # List of dicts
     
     # Image area in mm2 (approximate)
     # Patch size 640px. At 40x, 1px ~ 0.25um? 
@@ -131,17 +148,23 @@ def evaluate_model(model_path, dataset_path, config, logger):
     total_area_mm2 = len(image_files) * mm2_per_patch
     
     for thresh in tqdm(thresholds, desc="Sweeping Thresholds"):
+        # --- Object Level Counters ---
         tp_total = 0
         fp_total = 0
         fn_total = 0
-        tn_total = 0 # True Negatives (patches with no GT and no Pred)
+        
+        # --- Patch Level Counters ---
+        patch_tp = 0
+        patch_tn = 0
+        patch_fp = 0
+        patch_fn = 0
         
         for res in results:
             gt = res["gt_boxes"]
             # Filter predictions by threshold
             preds = [p for p, s in zip(res["pred_boxes"], res["pred_scores"]) if s >= thresh]
             
-            # Match predictions to GT
+            # --- Object Level Matching ---
             # Greedy matching
             matched_gt = set()
             fp_count = 0
@@ -171,40 +194,48 @@ def evaluate_model(model_path, dataset_path, config, logger):
             fp_total += fp
             fn_total += fn
             
-            # Patch-level NPV calculation logic:
-            # A "Negative" patch is one with NO predictions.
-            # A "True Negative" patch is one with NO predictions AND NO GT.
-            # A "False Negative" patch is one with NO predictions BUT HAS GT.
-            if len(preds) == 0:
-                if len(gt) == 0:
-                    tn_total += 1
-                else:
-                    # This patch was predicted negative (clean), but had parasites!
-                    # This contributes to the "False Negative" count for NPV
-                    pass 
+            # --- Patch Level Classification ---
+            has_preds = len(preds) > 0
+            has_gt = len(gt) > 0
+            
+            if has_preds and has_gt:
+                patch_tp += 1
+            elif not has_preds and not has_gt:
+                patch_tn += 1
+            elif has_preds and not has_gt:
+                patch_fp += 1
+            elif not has_preds and has_gt:
+                patch_fn += 1
         
-        # FROC Metrics
+        # --- Calculate Object Metrics ---
         sensitivity = tp_total / (tp_total + fn_total) if (tp_total + fn_total) > 0 else 0
+        precision = tp_total / (tp_total + fp_total) if (tp_total + fp_total) > 0 else 0
+        f1_score = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
         fp_per_mm2 = fp_total / total_area_mm2
+        
         froc_data.append((fp_per_mm2, sensitivity))
         
-        # NPV Metrics (Patch Level)
-        # NPV = TN / (TN + FN_patches)
-        # We need to count FN patches specifically
-        fn_patches = 0
-        tn_patches = 0
-        for res in results:
-            gt = res["gt_boxes"]
-            preds = [p for p, s in zip(res["pred_boxes"], res["pred_scores"]) if s >= thresh]
-            
-            if len(preds) == 0:
-                if len(gt) == 0:
-                    tn_patches += 1
-                else:
-                    fn_patches += 1
+        # --- Calculate Patch Metrics ---
+        patch_accuracy = (patch_tp + patch_tn) / (patch_tp + patch_tn + patch_fp + patch_fn) if (patch_tp + patch_tn + patch_fp + patch_fn) > 0 else 0
+        patch_specificity = patch_tn / (patch_tn + patch_fp) if (patch_tn + patch_fp) > 0 else 0
+        patch_precision = patch_tp / (patch_tp + patch_fp) if (patch_tp + patch_fp) > 0 else 0
+        patch_recall = patch_tp / (patch_tp + patch_fn) if (patch_tp + patch_fn) > 0 else 0
+        patch_npv = patch_tn / (patch_tn + patch_fn) if (patch_tn + patch_fn) > 0 else 0
         
-        npv = tn_patches / (tn_patches + fn_patches) if (tn_patches + fn_patches) > 0 else 0
-        npv_data.append((thresh, npv))
+        npv_data.append((thresh, patch_npv))
+        
+        all_metrics.append({
+            "thresh": thresh,
+            "sensitivity": sensitivity,
+            "precision": precision,
+            "f1": f1_score,
+            "fp_per_mm2": fp_per_mm2,
+            "patch_acc": patch_accuracy,
+            "patch_spec": patch_specificity,
+            "patch_prec": patch_precision,
+            "patch_rec": patch_recall,
+            "patch_npv": patch_npv
+        })
 
     # --- Plotting ---
     # Use the parent of inference_results as the base output directory
@@ -239,14 +270,28 @@ def evaluate_model(model_path, dataset_path, config, logger):
     target_thresh = 0.25
     # Find closest index
     idx = (np.abs(thresholds - target_thresh)).argmin()
+    m = all_metrics[idx]
     
-    print("\n" + "="*40)
-    print(f"  Evaluation Report @ Conf={target_thresh:.2f}")
-    print("="*40)
-    print(f"  Sensitivity:       {sens[idx]:.4f}")
-    print(f"  FP per mm²:        {fps[idx]:.4f}")
-    print(f"  Patch-Level NPV:   {npvs[idx]:.4f}")
-    print("="*40 + "\n")
+    print("\n" + "="*50)
+    print(f"  Comprehensive Evaluation Report @ Conf={m['thresh']:.2f}")
+    print("="*50)
+    print(f"  Standard YOLO Metrics:")
+    print(f"    mAP50:           {map50:.4f}")
+    print(f"    mAP50-95:        {map50_95:.4f}")
+    print("-" * 50)
+    print(f"  Object-Level Metrics (IoU > {iou_threshold}):")
+    print(f"    Sensitivity (Recall): {m['sensitivity']:.4f}")
+    print(f"    Precision:            {m['precision']:.4f}")
+    print(f"    F1 Score:             {m['f1']:.4f}")
+    print(f"    FP per mm²:           {m['fp_per_mm2']:.4f}")
+    print("-" * 50)
+    print(f"  Patch-Level Metrics:")
+    print(f"    Accuracy:             {m['patch_acc']:.4f}")
+    print(f"    Specificity:          {m['patch_spec']:.4f}")
+    print(f"    Precision:            {m['patch_prec']:.4f}")
+    print(f"    Recall:               {m['patch_rec']:.4f}")
+    print(f"    NPV:                  {m['patch_npv']:.4f}")
+    print("="*50 + "\n")
 
 
 def main():

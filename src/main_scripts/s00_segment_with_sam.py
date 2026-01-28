@@ -242,7 +242,8 @@ def generate_prompts_from_wsi(wsi_path: Path, config: dict, logger, debug_output
 
     Returns:
         tuple: A tuple containing:
-            - List of prompts, each with bounding box, centroid, and contour points.
+            - List of prompts, each with bounding box, centvlm
+            roid, and contour points.
             - Overview image of the WSI.
             - Opened mask image after morphological operations.
     """
