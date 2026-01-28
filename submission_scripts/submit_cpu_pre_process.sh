@@ -21,11 +21,11 @@ source .venv/bin/activate
 
 # --- Run CPU-bound Scripts ---
 echo "Step 00: Segmenting Oysters..."
-python -m src.main_scripts.00_segment_oysters --config ${CONFIG_FILE}
+python -m src.main_scripts.s00_segment_with_sam --config ${CONFIG_FILE}
 echo "Step 00 finished with exit code: $?"
 
 echo "Step 01: Creating YOLO Dataset..."
-python -m src.main_scripts.01_create_dataset
+python -m src.main_scripts.s01_create_dataset --config ${CONFIG_FILE}
 echo "Step 01 finished with exit code: $?"
 
 echo "CPU Pre-processing Job Finished: $(date)"
