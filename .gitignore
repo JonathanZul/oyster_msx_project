@@ -29,6 +29,7 @@ verification_outputs/
 .vscode/
 .idea/
 *.ipynb_checkpoints
+.agent/
 
 # Alternate config files
 *_*.yaml

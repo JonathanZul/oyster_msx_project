@@ -37,7 +37,9 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
         with tifffile.TiffFile(wsi_path) as tif:
             level0 = tif.series[0].levels[0]
             img_height, img_width = level0.shape[:2]
-            zarr_slicer = zarr.open(tif.series[0].aszarr(), mode='r')[0]
+            zarr_store = tif.series[0].aszarr()
+            zarr_group = zarr.open(zarr_store, mode='r')
+            zarr_slicer = zarr_group["0"]
             logger.info(f"WSI opened. Dimensions: {img_width}x{img_height}")
 
             # Define the grid of overlapping patches
