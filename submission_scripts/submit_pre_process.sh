@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=0-03:00:00        # 3 hours
+#SBATCH --time=0-05:00:00        # 3 hours
 #SBATCH --account=def-agodbout
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4       # Use more CPUs as we are CPU-bound

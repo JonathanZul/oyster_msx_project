@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=0-00:30:00        # 30 minutes is plenty
+#SBATCH --time=0-01:00:00        # 1 hour
 #SBATCH --account=def-agodbout
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=8000M

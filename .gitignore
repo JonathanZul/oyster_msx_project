@@ -30,3 +30,8 @@ verification_outputs/
 .idea/
 *.ipynb_checkpoints
 .agent/
+
+# 6. AI Code Assistants
+.aicodesnippets/
+.claude/
+.CLAUDE.md

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-04:00:00
 #SBATCH --account=def-agodbout
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=12
