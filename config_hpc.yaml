@@ -1,0 +1,159 @@
+# ===================================================================
+#        HPC-SPECIFIC MASTER CONFIGURATION FOR MSX PROJECT
+# ===================================================================
+
+# 1. Project Paths (HPC)
+# Paths are set to use the /home/ and /scratch/ directories.
+# -------------------------------------------------------------------
+paths:
+  # Input data
+  raw_wsis: "/home/jezul/scratch/oyster_data/raw/wsis/"
+  qupath_exports: "/home/jezul/scratch/oyster_data/raw/qupath_exports/"
+  
+  # Ground truth annotations for segmentation evaluation
+  segmentation_annotations: "/home/jezul/scratch/oyster_data/interim/segmentation_annotations"
+
+  # Intermediate and processed data
+  oyster_masks: "/home/jezul/scratch/oyster_data/interim/oyster_masks"
+  yolo_dataset: "/home/jezul/scratch/oyster_data/processed/yolo_dataset"
+
+  # Model and script outputs
+  model_output_dir: "/home/jezul/scratch/oyster_data/models"
+  inference_results: "/home/jezul/scratch/oyster_data/outputs/inference_results"
+  qupath_imports: "/home/jezul/scratch/oyster_data/outputs/qupath_imports"
+
+  # Logging directory
+  logs: "/home/jezul/scratch/oyster_data/logs"
+  tensorboard_log_dir: "/home/jezul/scratch/oyster_data/logs/tensorboard_logs/"
+
+# 2. SAM-Based Oyster Segmentation (V7 Hybrid Pipeline)
+# Parameters controlling the `00_segment_with_sam.py` script.
+# -------------------------------------------------------------------
+sam_segmentation:
+  # --- Prompt Generation (Classical CV) ---
+  # Parameters for finding the oyster centroids.
+  prompt_overview_downsample: 32.0
+  gaussian_blur_kernel: [3, 3]
+  adaptive_thresh_block_size: 11
+  adaptive_thresh_c: 2
+  morph_close_kernel: [5, 5]
+  morph_close_iter: 2
+  morph_open_kernel: [3, 3]
+  morph_open_iter: 2
+
+  # --- Watershed Segmentation ---
+  watershed_erosion_iterations: 2
+  num_oysters_to_detect: 2
+  min_contour_area_percent: 0.10   # A contour must be at least 1% of the image.
+  max_contour_area_percent: 0.45   # A contour cannot be more than 60% of the image.
+  min_fragment_area: 200
+
+
+  # --- SAM Inference ---
+  # Parameters for running the original Segment Anything Model.
+  sam_overview_downsample: 8.0
+  pos_points_per_oyster: 1  # Number of positive points to use as prompts per oyster.
+
+  # Official SAM Checkpoint URL and corresponding model type.
+  # Using the most powerful ViT-Huge model.
+  sam_checkpoint_url: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+  sam_model_type: "vit_h"
+
+  min_mask_area: 5000
+
+  # --- Debugging ---
+  save_debug_images: true
+  debug_img_max_dim: 1024
+
+evaluation:
+  save_debug_visuals: True # Save debug images during evaluation
+
+# 3. Dataset Creation Parameters (YOLO)
+# Parameters controlling the `01_create_dataset.py` script.
+# -------------------------------------------------------------------
+dataset_creation:
+  patch_size: 640 # The size of square patches (in pixels) to create.
+  train_val_split: 0.8 # 80% for training, 20% for validation.
+  classes:
+    "MSX Plasmodia": 0
+    "MSX Spores": 1
+    "Waste": 2
+    "Hemocyte": 3
+    "Ignore": 4
+    "Potential Confuser": 5
+    "Stain": 6
+    "?": 7
+
+# 4. Training Parameters (YOLO)
+# Parameters controlling the `02_train_yolo.py` script.
+# -------------------------------------------------------------------
+training:
+  yolo_model: "yolov8n.pt"
+  epochs: 100
+  batch_size: 16
+  device: "cuda:0" # HPC uses CUDA
+  img_size: 640
+
+# 5. Inference Parameters (YOLO)
+# Parameters controlling the `03_run_inference.py` script.
+# -------------------------------------------------------------------
+inference:
+  model_checkpoint: "/home/jezul/scratch/oyster_data/models/yolov8n_msx_oyster_run/weights/best.pt"
+  patch_overlap: 0.2
+  conf_threshold: 0.25
+
+# ===================================================================
+#               CROSS-VALIDATION CONFIGURATION (HPC)
+# ===================================================================
+cross_validation:
+  methods_to_run: ["watershed", "sam", "unet"]
+  n_splits: 5
+  data_split_seed: 42
+  unet_epochs_per_fold: 25
+  temp_output_dir: "/home/jezul/scratch/oyster_data/outputs/cross_validation_temp/"
+
+# ===================================================================
+#    ARCHIVED PARAMETERS (for reference and use by archived scripts)
+# ===================================================================
+
+# Classical CV Watershed Parameters
+oyster_segmentation:
+  processing_downsample: 32.0
+  num_oysters_to_detect: 2
+  gaussian_blur_kernel: [3, 3]
+  adaptive_thresh_block_size: 11
+  adaptive_thresh_c: 2
+  morph_close_kernel: [5, 5]
+  morph_close_iter: 2
+  morph_open_kernel: [3, 3]
+  morph_open_iter: 2
+  min_contour_area_percent: 0.01
+  use_watershed_separation: true
+  watershed_erosion_iterations: 8
+  enable_fragment_merging: true
+  min_fragment_area_percent: 0.001
+  save_debug_images: true
+  debug_img_max_dim: 1024
+
+# ML-based (U-Net) Segmentation Parameters
+ml_segmentation:
+  overview_downsample: 32.0
+  image_size: [768, 1024]
+  classes:
+    "Oyster 1": 1
+    "Oyster 2": 2
+  device: "cuda:0" # HPC uses CUDA
+  encoder: "resnet34"
+  encoder_weights: "imagenet"
+  epochs: 100
+  batch_size: 4
+  learning_rate: 0.001
+  freeze_epochs: 10
+  finetune_lr_factor: 0.01
+  data_split_seed: 42
+  train_val_split: 0.8
+  early_stopping_patience: 20
+  model_checkpoint: "models/segmentation_model/best_model.pt"
+  confidence_threshold: 0.5
+  min_mask_area: 5000
+  save_visualization: true
