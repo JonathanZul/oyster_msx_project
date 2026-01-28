@@ -25,7 +25,7 @@ fi
 
 # --- Step 1: Submit the CPU pre-processing job ---
 echo "Submitting Step 1: CPU Pre-processing..."
-job1_output=$(sbatch submission_scripts/submit_cpu_pre_process.sh ${CONFIG_FILE})
+job1_output=$(sbatch submission_scripts/submit_pre_process.sh ${CONFIG_FILE})
 job1_id=$(echo $job1_output | awk '{print $4}')
 
 if [[ -z "$job1_id" ]]; then
