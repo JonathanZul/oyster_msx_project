@@ -12,6 +12,33 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
+def is_slide_completed(slide_output_dir: Path) -> bool:
+    """
+    Checks if a slide has already been fully processed by looking for a completion marker.
+
+    Args:
+        slide_output_dir (Path): The output directory for this slide.
+
+    Returns:
+        bool: True if the slide has been completed, False otherwise.
+    """
+    completion_marker = slide_output_dir / ".completed"
+    return completion_marker.exists()
+
+
+def mark_slide_completed(slide_output_dir: Path, logger):
+    """
+    Creates a completion marker file to indicate the slide has been fully processed.
+
+    Args:
+        slide_output_dir (Path): The output directory for this slide.
+        logger: The logger instance.
+    """
+    completion_marker = slide_output_dir / ".completed"
+    completion_marker.touch()
+    logger.info(f"Marked slide as completed: {completion_marker}")
+
+
 def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
     """
     Runs inference on a single WSI by breaking it into patches.
@@ -32,6 +59,11 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
     slide_output_dir = Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
     slide_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Raw prediction files will be saved to: {slide_output_dir}")
+
+    # Check if this slide has already been completed
+    if is_slide_completed(slide_output_dir):
+        logger.info(f"Slide {wsi_path.name} already completed. Skipping.")
+        return
 
     try:
         with tifffile.TiffFile(wsi_path) as tif:
@@ -89,7 +121,10 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
 
     except Exception as e:
         logger.error(f"Failed to process WSI {wsi_path.name}. Error: {e}", exc_info=True)
+        return
 
+    # Mark slide as completed only if processing finished without errors
+    mark_slide_completed(slide_output_dir, logger)
     logger.info(f"--- Finished inference on: {wsi_path.name} ---")
 
 
@@ -103,6 +138,23 @@ def main():
         type=str,
         default="config.yaml",
         help="Path to the master configuration file."
+    )
+    parser.add_argument(
+        "--slide-index",
+        type=int,
+        default=None,
+        help="Process only the slide at this index (0-based). For batch job arrays."
+    )
+    parser.add_argument(
+        "--slides-per-job",
+        type=int,
+        default=1,
+        help="Number of slides to process per job (used with --slide-index)."
+    )
+    parser.add_argument(
+        "--list-slides",
+        action="store_true",
+        help="List all unannotated slides and exit. Useful for planning batch jobs."
     )
     args = parser.parse_args()
 
@@ -156,10 +208,34 @@ def main():
         logger.info("No unannotated WSIs found to process. All slides appear to have a corresponding GeoJSON file.")
         return
 
+    # Sort slides for consistent ordering across batch jobs
+    unannotated_wsis = sorted(unannotated_wsis, key=lambda p: p.name)
     logger.info(f"Found {len(unannotated_wsis)} unannotated WSIs to process.")
 
-    # 3. Run inference on each unannotated WSI
-    for wsi_path in unannotated_wsis:
+    # Handle --list-slides flag
+    if args.list_slides:
+        logger.info("Slide listing mode. Printing slides and exiting.")
+        for i, wsi_path in enumerate(unannotated_wsis):
+            completed = is_slide_completed(
+                Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
+            )
+            status = "[DONE]" if completed else "[PENDING]"
+            print(f"{i}: {wsi_path.name} {status}")
+        return
+
+    # 3. Determine which slides to process based on arguments
+    if args.slide_index is not None:
+        # Batch mode: process only slides in the specified range
+        start_idx = args.slide_index * args.slides_per_job
+        end_idx = start_idx + args.slides_per_job
+        slides_to_process = unannotated_wsis[start_idx:end_idx]
+        logger.info(f"Batch mode: processing slides {start_idx} to {end_idx-1} ({len(slides_to_process)} slides)")
+    else:
+        # Normal mode: process all slides
+        slides_to_process = unannotated_wsis
+
+    # Run inference on each selected WSI
+    for wsi_path in slides_to_process:
         process_single_wsi_inference(wsi_path, model, config, logger)
 
     logger.info("--- Inference Script Finished ---")
