@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-04:00:00
 #SBATCH --account=def-agodbout
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=16000M
+#SBATCH --mem=16G
 #SBATCH --job-name=oyster-infer
 #SBATCH --output=hpc_outputs/%x-%j_%a.out
 #SBATCH --mail-user=jezulluna@upei.ca
