@@ -151,6 +151,17 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
     logger.info(f"Successfully saved QuPath-compatible predictions to: {output_path}")
 
 
+def is_slide_completed(slide_dir: Path) -> bool:
+    """Check if a slide's inference was fully completed."""
+    return (slide_dir / ".completed").exists()
+
+
+def is_slide_already_formatted(slide_dir: Path, output_dir: Path) -> bool:
+    """Check if a slide already has a formatted GeoJSON output."""
+    output_path = output_dir / f"{slide_dir.name}_predictions.geojson"
+    return output_path.exists()
+
+
 def main():
     """Main function to orchestrate the prediction formatting process."""
     parser = argparse.ArgumentParser(description="Stage 04: Format YOLO Predictions for QuPath")
@@ -159,6 +170,16 @@ def main():
         type=str,
         default="config.yaml",
         help="Path to the master configuration file."
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-process slides even if GeoJSON output already exists."
+    )
+    parser.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="Process slides even if inference was not fully completed (no .completed marker)."
     )
     args = parser.parse_args()
 
@@ -170,19 +191,40 @@ def main():
     logger.info("--- Starting Prediction Formatting Script ---")
 
     inference_dir = Path(config['paths']['inference_results'])
+    output_dir = Path(config['paths']['qupath_imports'])
 
     if not inference_dir.exists() or not any(inference_dir.iterdir()):
         logger.warning(f"Inference results directory is empty or does not exist: '{inference_dir}'")
         return
 
-    # Find all slide prediction subdirectories
-    slide_dirs = [d for d in inference_dir.iterdir() if d.is_dir()]
+    # Find all slide prediction subdirectories (exclude hidden dirs)
+    slide_dirs = [d for d in inference_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
 
-    valid_slide_dirs = [d for d in slide_dirs if not d.name.startswith('.')]
+    logger.info(f"Found {len(slide_dirs)} slide prediction directories.")
 
-    logger.info(f"Found {len(slide_dirs)} slide prediction directories to process.")
+    # Filter to only completed slides unless --include-incomplete is set
+    if not args.include_incomplete:
+        completed_dirs = [d for d in slide_dirs if is_slide_completed(d)]
+        incomplete_count = len(slide_dirs) - len(completed_dirs)
+        if incomplete_count > 0:
+            logger.info(f"Skipping {incomplete_count} incomplete slides (no .completed marker).")
+        slide_dirs = completed_dirs
 
-    for slide_dir in valid_slide_dirs:
+    # Skip already formatted slides unless --force is set
+    if not args.force:
+        to_process = [d for d in slide_dirs if not is_slide_already_formatted(d, output_dir)]
+        skipped_count = len(slide_dirs) - len(to_process)
+        if skipped_count > 0:
+            logger.info(f"Skipping {skipped_count} slides (GeoJSON already exists). Use --force to re-process.")
+        slide_dirs = to_process
+
+    if not slide_dirs:
+        logger.info("No slides to process.")
+        return
+
+    logger.info(f"Processing {len(slide_dirs)} slides.")
+
+    for slide_dir in slide_dirs:
         process_single_slide_predictions(slide_dir, config, logger)
 
     logger.info("--- Prediction Formatting Script Finished ---")
