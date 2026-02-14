@@ -85,15 +85,15 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
     boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
     scores_tensor = torch.tensor(all_scores, dtype=torch.float32)
 
-    # Run class-wise NMS to avoid suppressing detections across classes.
+    # Use batched NMS for a single vectorized pass while still isolating classes.
     class_ids_array = np.array(all_class_ids)
-    kept_indices = []
-    for class_id in np.unique(class_ids_array):
-        class_mask = np.where(class_ids_array == class_id)[0]
-        class_boxes = boxes_tensor[class_mask]
-        class_scores = scores_tensor[class_mask]
-        class_keep = torchvision.ops.nms(class_boxes, class_scores, iou_threshold=0.4)
-        kept_indices.extend(class_mask[class_keep.cpu().numpy()].tolist())
+    class_ids_tensor = torch.tensor(class_ids_array, dtype=torch.int64)
+    kept_indices = torchvision.ops.batched_nms(
+        boxes_tensor,
+        scores_tensor,
+        class_ids_tensor,
+        iou_threshold=0.4
+    ).cpu().numpy().tolist()
 
     # Keep deterministic ordering by descending score.
     kept_indices = sorted(kept_indices, key=lambda i: all_scores[i], reverse=True)
