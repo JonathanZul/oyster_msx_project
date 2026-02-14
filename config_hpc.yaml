@@ -62,7 +62,7 @@ sam_segmentation:
   min_mask_area: 5000
 
   # --- Debugging ---
-  save_debug_images: true
+  save_debug_images: false
   debug_img_max_dim: 1024
 
 evaluation:
@@ -76,14 +76,8 @@ dataset_creation:
   train_val_test_split: [0.70, 0.15, 0.15] # Train/Val/Test ratios for random split
   patch_level_val_split: 0.15 # Fraction of training patches to use for validation (fallback)
   classes:
-    "MSX Plasmodia": 0
-    "MSX Spores": 1
-    "Waste": 2
-    "Hemocyte": 3
-    "Ignore": 4
-    "Potential Confuser": 5
-    "Stain": 6
-    "?": 7
+    "Distractor": 0
+    "Plasmodia": 1
 
 # 4. Training Parameters (YOLO)
 # Parameters controlling the `02_train_yolo.py` script.
@@ -95,6 +89,12 @@ training:
   batch_size: 16
   device: "cuda:0" # HPC uses CUDA
   img_size: 640
+  workers: 12
+  cache: false
+  amp: true
+  extra_train_args:
+    deterministic: false
+    cos_lr: true
 
 # 5. Inference Parameters (YOLO)
 # Parameters controlling the `03_run_inference.py` script.
@@ -103,6 +103,9 @@ inference:
   model_checkpoint: "/home/jezul/scratch/oyster_data/models/yolov8n_msx_oyster_run/weights/best.pt"
   patch_overlap: 0.2
   conf_threshold: 0.25
+  inference_batch_size: 16
+  max_patch_read_retries: 3
+  patch_read_retry_sleep_seconds: 0.15
 
 # ===================================================================
 #               CROSS-VALIDATION CONFIGURATION (HPC)
