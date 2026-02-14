@@ -104,6 +104,10 @@ inference:
   patch_overlap: 0.2
   conf_threshold: 0.25
   inference_batch_size: 32
+  patch_read_workers: 8
+  detection_flush_every_batches: 8
+  predict_half: true
+  predict_device: "cuda:0"
   max_patch_read_retries: 3
   patch_read_retry_sleep_seconds: 0.15
 

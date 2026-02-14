@@ -2,6 +2,8 @@ import os
 import argparse
 import json
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import tifffile
 import zarr
@@ -80,7 +82,8 @@ def run_batched_prediction(
         patch_images: list[np.ndarray],
         patch_coords: list[tuple[int, int]],
         conf_threshold: float,
-        patch_size: int
+        patch_size: int,
+        predict_kwargs: dict | None = None
 ):
     """
     Runs YOLO prediction on a batch of patches and returns global-coordinate detections.
@@ -89,7 +92,12 @@ def run_batched_prediction(
         return []
 
     batch_detections = []
-    results = model.predict(source=patch_images, conf=conf_threshold, verbose=False)
+    results = model.predict(
+        source=patch_images,
+        conf=conf_threshold,
+        verbose=False,
+        **(predict_kwargs or {})
+    )
 
     for result, (patch_x, patch_y) in zip(results, patch_coords):
         if len(result.boxes) == 0:
@@ -137,9 +145,26 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, ba
     batch_size = int(batch_size_override if batch_size_override is not None else params.get("inference_batch_size", 16))
     max_read_retries = int(params.get("max_patch_read_retries", 3))
     retry_sleep_s = float(params.get("patch_read_retry_sleep_seconds", 0.15))
+    patch_read_workers = int(params.get("patch_read_workers", max(2, min(8, (os.cpu_count() or 4)))))
+    flush_every_batches = int(params.get("detection_flush_every_batches", 8))
+    predict_half = bool(params.get("predict_half", True)) and torch.cuda.is_available()
+    predict_device = params.get("predict_device", None) or config.get("training", {}).get("device", None)
+    predict_kwargs = {
+        "imgsz": patch_size,
+        "half": predict_half,
+    }
+    if predict_device:
+        predict_kwargs["device"] = predict_device
+
     if batch_size < 1:
         logger.warning("Invalid inference_batch_size; defaulting to 1.")
         batch_size = 1
+    if patch_read_workers < 1:
+        logger.warning("Invalid patch_read_workers; defaulting to 1.")
+        patch_read_workers = 1
+    if flush_every_batches < 1:
+        logger.warning("Invalid detection_flush_every_batches; defaulting to 1.")
+        flush_every_batches = 1
 
     # Create a unique output directory for this slide's raw predictions
     slide_output_dir = Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
@@ -186,19 +211,50 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, ba
             patch_images_batch = []
             patch_coords_batch = []
             detection_rows_buffer = []
+            batch_count_since_flush = 0
             t0 = time.time()
 
-            for y in tqdm(y_coords, desc=f"Processing rows for {wsi_path.stem}"):
-                for x in x_coords:
-                    try:
-                        patch_image = read_patch_with_retry(
-                            zarr_slicer=zarr_slicer,
-                            x=x,
-                            y=y,
-                            patch_size=patch_size,
-                            max_retries=max_read_retries,
-                            retry_sleep_s=retry_sleep_s
-                        )
+            def _read_patch_task(coord: tuple[int, int]):
+                x, y = coord
+                try:
+                    patch = read_patch_with_retry(
+                        zarr_slicer=zarr_slicer,
+                        x=x,
+                        y=y,
+                        patch_size=patch_size,
+                        max_retries=max_read_retries,
+                        retry_sleep_s=retry_sleep_s
+                    )
+                    return x, y, patch, None
+                except Exception as err:
+                    return x, y, None, err
+
+            coord_iter = ((x, y) for y in y_coords for x in x_coords)
+            max_inflight_reads = max(batch_size * 2, patch_read_workers)
+            inflight: deque[tuple[tuple[int, int], object]] = deque()
+
+            with ThreadPoolExecutor(max_workers=patch_read_workers) as executor:
+                for _ in range(max_inflight_reads):
+                    coord = next(coord_iter, None)
+                    if coord is None:
+                        break
+                    inflight.append((coord, executor.submit(_read_patch_task, coord)))
+
+                with tqdm(total=total_patches, desc=f"Patches for {wsi_path.stem}") as pbar:
+                    while inflight:
+                        (x, y), future = inflight.popleft()
+                        next_coord = next(coord_iter, None)
+                        if next_coord is not None:
+                            inflight.append((next_coord, executor.submit(_read_patch_task, next_coord)))
+
+                        _, _, patch_image, err = future.result()
+                        pbar.update(1)
+
+                        if err is not None:
+                            failed_patch_count += 1
+                            logger.error(f"Failed to process patch at (x={x}, y={y}). Error: {err}", exc_info=True)
+                            continue
+
                         patch_images_batch.append(patch_image)
                         patch_coords_batch.append((x, y))
                         processed_patch_count += 1
@@ -209,18 +265,17 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, ba
                                 patch_images=patch_images_batch,
                                 patch_coords=patch_coords_batch,
                                 conf_threshold=params['conf_threshold'],
-                                patch_size=patch_size
+                                patch_size=patch_size,
+                                predict_kwargs=predict_kwargs
                             )
                             detection_rows_buffer.extend(detections)
-                            flush_detections_jsonl(detections_path, detection_rows_buffer)
-                            detection_rows_buffer.clear()
+                            batch_count_since_flush += 1
+                            if batch_count_since_flush >= flush_every_batches:
+                                flush_detections_jsonl(detections_path, detection_rows_buffer)
+                                detection_rows_buffer.clear()
+                                batch_count_since_flush = 0
                             patch_images_batch.clear()
                             patch_coords_batch.clear()
-
-                    except Exception as e:
-                        failed_patch_count += 1
-                        logger.error(f"Failed to process patch at (x={x}, y={y}). Error: {e}", exc_info=True)
-                        continue
 
             if patch_images_batch:
                 detections = run_batched_prediction(
@@ -228,10 +283,12 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, ba
                     patch_images=patch_images_batch,
                     patch_coords=patch_coords_batch,
                     conf_threshold=params['conf_threshold'],
-                    patch_size=patch_size
+                    patch_size=patch_size,
+                    predict_kwargs=predict_kwargs
                 )
                 detection_rows_buffer.extend(detections)
-                flush_detections_jsonl(detections_path, detection_rows_buffer)
+
+            flush_detections_jsonl(detections_path, detection_rows_buffer)
 
             elapsed_s = max(time.time() - t0, 1e-6)
             logger.info(
