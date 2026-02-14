@@ -1,5 +1,7 @@
 import os
 import argparse
+import json
+import time
 import torch
 import tifffile
 import zarr
@@ -39,6 +41,84 @@ def mark_slide_completed(slide_output_dir: Path, logger):
     logger.info(f"Marked slide as completed: {completion_marker}")
 
 
+def mark_slide_incomplete(slide_output_dir: Path, failed_patches: int, logger):
+    """
+    Writes a marker that indicates the slide finished with patch-level failures.
+    """
+    failed_marker = slide_output_dir / ".failed"
+    failed_marker.write_text(f"failed_patches={failed_patches}\n", encoding="utf-8")
+    logger.warning(f"Marked slide as incomplete due to {failed_patches} failed patch reads: {failed_marker}")
+
+
+def read_patch_with_retry(zarr_slicer, x: int, y: int, patch_size: int, max_retries: int, retry_sleep_s: float):
+    """
+    Reads a patch from a zarr-backed WSI with bounded retry attempts.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return zarr_slicer[y:y + patch_size, x:x + patch_size]
+        except OSError:
+            if attempt >= max_retries:
+                raise
+            time.sleep(retry_sleep_s * (2 ** attempt))
+
+
+def flush_detections_jsonl(detections_path: Path, detections_batch: list[dict]):
+    """
+    Appends batched detection rows to a JSONL file.
+    """
+    if not detections_batch:
+        return
+
+    with open(detections_path, "a", encoding="utf-8") as out_f:
+        for row in detections_batch:
+            out_f.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+
+def run_batched_prediction(
+        model,
+        patch_images: list[np.ndarray],
+        patch_coords: list[tuple[int, int]],
+        conf_threshold: float,
+        patch_size: int
+):
+    """
+    Runs YOLO prediction on a batch of patches and returns global-coordinate detections.
+    """
+    if not patch_images:
+        return []
+
+    batch_detections = []
+    results = model.predict(source=patch_images, conf=conf_threshold, verbose=False)
+
+    for result, (patch_x, patch_y) in zip(results, patch_coords):
+        if len(result.boxes) == 0:
+            continue
+
+        for box in result.boxes:
+            class_id = int(box.cls)
+            score = float(box.conf)
+            x_center, y_center, width, height = box.xywhn[0].tolist()
+
+            x1 = (x_center - width / 2) * patch_size
+            y1 = (y_center - height / 2) * patch_size
+            x2 = (x_center + width / 2) * patch_size
+            y2 = (y_center + height / 2) * patch_size
+
+            batch_detections.append(
+                {
+                    "class_id": class_id,
+                    "score": score,
+                    "x1": x1 + patch_x,
+                    "y1": y1 + patch_y,
+                    "x2": x2 + patch_x,
+                    "y2": y2 + patch_y,
+                }
+            )
+
+    return batch_detections
+
+
 def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
     """
     Runs inference on a single WSI by breaking it into patches.
@@ -54,16 +134,29 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
     params = config['inference']
     patch_size = config['dataset_creation']['patch_size']  # Use same patch size as training
     patch_overlap = params['patch_overlap']
+    batch_size = int(params.get("inference_batch_size", 16))
+    max_read_retries = int(params.get("max_patch_read_retries", 3))
+    retry_sleep_s = float(params.get("patch_read_retry_sleep_seconds", 0.15))
+    if batch_size < 1:
+        logger.warning("Invalid inference_batch_size; defaulting to 1.")
+        batch_size = 1
 
     # Create a unique output directory for this slide's raw predictions
     slide_output_dir = Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
     slide_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Raw prediction files will be saved to: {slide_output_dir}")
+    detections_path = slide_output_dir / "detections.jsonl"
 
     # Check if this slide has already been completed
     if is_slide_completed(slide_output_dir):
         logger.info(f"Slide {wsi_path.name} already completed. Skipping.")
         return
+
+    if detections_path.exists():
+        detections_path.unlink()
+    failed_marker = slide_output_dir / ".failed"
+    if failed_marker.exists():
+        failed_marker.unlink()
 
     try:
         with tifffile.TiffFile(wsi_path) as tif:
@@ -85,46 +178,77 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
 
             total_patches = len(x_coords) * len(y_coords)
             logger.info(f"Generating a grid of {len(x_coords)}x{len(y_coords)} = {total_patches} patches...")
+            logger.info(f"Using inference batch size: {batch_size}")
 
             # Iterate through the grid and run prediction on each patch
+            failed_patch_count = 0
+            processed_patch_count = 0
+            patch_images_batch = []
+            patch_coords_batch = []
+            detection_rows_buffer = []
+            t0 = time.time()
+
             for y in tqdm(y_coords, desc=f"Processing rows for {wsi_path.stem}"):
                 for x in x_coords:
                     try:
-                        # Read the patch from the WSI
-                        patch_image = zarr_slicer[y:y + patch_size, x:x + patch_size]
+                        patch_image = read_patch_with_retry(
+                            zarr_slicer=zarr_slicer,
+                            x=x,
+                            y=y,
+                            patch_size=patch_size,
+                            max_retries=max_read_retries,
+                            retry_sleep_s=retry_sleep_s
+                        )
+                        patch_images_batch.append(patch_image)
+                        patch_coords_batch.append((x, y))
+                        processed_patch_count += 1
 
-                        # The model expects a list of images, so we put our patch in a list
-                        results = model.predict(source=[patch_image], conf=params['conf_threshold'], verbose=False)
-
-                        # The result object contains the predictions for the first image
-                        result = results[0]
-
-                        # If the model found any objects in this patch...
-                        if len(result.boxes) > 0:
-                            # Define a unique filename for this patch's prediction file
-                            pred_filename = slide_output_dir / f"patch_x{x}_y{y}.txt"
-
-                            with open(pred_filename, 'w') as f:
-                                for box in result.boxes:
-                                    # Extract class, confidence, and normalized coordinates
-                                    class_id = int(box.cls)
-                                    confidence = float(box.conf)
-                                    # Coordinates are already normalized (0-1) relative to the patch
-                                    x_center, y_center, width, height = box.xywhn[0].tolist()
-
-                                    # Write to file in YOLO format
-                                    f.write(f"{class_id} {confidence} {x_center} {y_center} {width} {height}\n")
+                        if len(patch_images_batch) >= batch_size:
+                            detections = run_batched_prediction(
+                                model=model,
+                                patch_images=patch_images_batch,
+                                patch_coords=patch_coords_batch,
+                                conf_threshold=params['conf_threshold'],
+                                patch_size=patch_size
+                            )
+                            detection_rows_buffer.extend(detections)
+                            flush_detections_jsonl(detections_path, detection_rows_buffer)
+                            detection_rows_buffer.clear()
+                            patch_images_batch.clear()
+                            patch_coords_batch.clear()
 
                     except Exception as e:
+                        failed_patch_count += 1
                         logger.error(f"Failed to process patch at (x={x}, y={y}). Error: {e}", exc_info=True)
                         continue
+
+            if patch_images_batch:
+                detections = run_batched_prediction(
+                    model=model,
+                    patch_images=patch_images_batch,
+                    patch_coords=patch_coords_batch,
+                    conf_threshold=params['conf_threshold'],
+                    patch_size=patch_size
+                )
+                detection_rows_buffer.extend(detections)
+                flush_detections_jsonl(detections_path, detection_rows_buffer)
+
+            elapsed_s = max(time.time() - t0, 1e-6)
+            logger.info(
+                f"Processed patches: {processed_patch_count}/{total_patches} "
+                f"({processed_patch_count / elapsed_s:.2f} patches/s)"
+            )
+            logger.info(f"Failed patch reads: {failed_patch_count}")
 
     except Exception as e:
         logger.error(f"Failed to process WSI {wsi_path.name}. Error: {e}", exc_info=True)
         return
 
-    # Mark slide as completed only if processing finished without errors
-    mark_slide_completed(slide_output_dir, logger)
+    # Mark slide as complete only if all patches were read and processed successfully.
+    if failed_patch_count == 0:
+        mark_slide_completed(slide_output_dir, logger)
+    else:
+        mark_slide_incomplete(slide_output_dir, failed_patch_count, logger)
     logger.info(f"--- Finished inference on: {wsi_path.name} ---")
 
 
