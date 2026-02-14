@@ -1,8 +1,6 @@
 # src/main_scripts/04_format_predictions.py
 
-import os
 import argparse
-import glob
 import json
 import torch
 import torchvision
@@ -31,52 +29,50 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
     all_boxes = []
     all_scores = []
     all_class_ids = []
+    detections_jsonl = slide_pred_dir / "detections.jsonl"
 
-    txt_files = list(slide_pred_dir.glob("*.txt"))
-    if not txt_files:
-        logger.warning("No prediction files found in this directory. Skipping.")
-        return
+    if detections_jsonl.exists():
+        logger.info(f"Using compact detection file: {detections_jsonl.name}")
+        with open(detections_jsonl, "r", encoding="utf-8") as in_f:
+            for line in in_f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                all_boxes.append([row["x1"], row["y1"], row["x2"], row["y2"]])
+                all_scores.append(row["score"])
+                all_class_ids.append(int(row["class_id"]))
+    else:
+        txt_files = list(slide_pred_dir.glob("*.txt"))
+        if not txt_files:
+            logger.warning("No prediction files found in this directory. Skipping.")
+            return
 
-    logger.info(f"Found {len(txt_files)} prediction files to process.")
+        logger.info(f"Using legacy patch text files: {len(txt_files)} files.")
+        patch_size = config['dataset_creation']['patch_size']
 
-    patch_size = config['dataset_creation']['patch_size']
+        for txt_file in tqdm(txt_files, desc="Reading raw predictions"):
+            if txt_file.name.startswith('.'):
+                logger.debug(f"Skipping hidden file: {txt_file.name}")
+                continue
 
-    for txt_file in tqdm(txt_files, desc="Reading raw predictions"):
-        if txt_file.name.startswith('.'):
-            logger.debug(f"Skipping hidden file: {txt_file.name}")
-            continue
+            parts = txt_file.stem.split('_')
+            patch_x = int(parts[1][1:])
+            patch_y = int(parts[2][1:])
 
-        # Extract patch's top-left coordinates from the filename
-        parts = txt_file.stem.split('_')
-        patch_x = int(parts[1][1:])  # e.g., 'x1024' -> 1024
-        patch_y = int(parts[2][1:])  # e.g., 'y2048' -> 2048
-
-        with open(txt_file, 'r') as f:
-            for line in f:
-                class_id, conf, x_c, y_c, w, h = map(float, line.strip().split())
-
-                # Convert normalized, patch-relative coords to absolute global WSI coords
-                # a. Un-normalize to patch pixel coordinates
-                abs_w = w * patch_size
-                abs_h = h * patch_size
-                abs_xc = x_c * patch_size
-                abs_yc = y_c * patch_size
-
-                # b. Convert from (center, w, h) to (x1, y1, x2, y2)
-                x1 = abs_xc - abs_w / 2
-                y1 = abs_yc - abs_h / 2
-                x2 = abs_xc + abs_w / 2
-                y2 = abs_yc + abs_h / 2
-
-                # c. Add patch offset to get global WSI coordinates
-                global_x1 = x1 + patch_x
-                global_y1 = y1 + patch_y
-                global_x2 = x2 + patch_x
-                global_y2 = y2 + patch_y
-
-                all_boxes.append([global_x1, global_y1, global_x2, global_y2])
-                all_scores.append(conf)
-                all_class_ids.append(int(class_id))
+            with open(txt_file, 'r', encoding="utf-8") as f:
+                for line in f:
+                    class_id, conf, x_c, y_c, w, h = map(float, line.strip().split())
+                    abs_w = w * patch_size
+                    abs_h = h * patch_size
+                    abs_xc = x_c * patch_size
+                    abs_yc = y_c * patch_size
+                    x1 = abs_xc - abs_w / 2
+                    y1 = abs_yc - abs_h / 2
+                    x2 = abs_xc + abs_w / 2
+                    y2 = abs_yc + abs_h / 2
+                    all_boxes.append([x1 + patch_x, y1 + patch_y, x2 + patch_x, y2 + patch_y])
+                    all_scores.append(conf)
+                    all_class_ids.append(int(class_id))
 
     if not all_boxes:
         logger.warning("No valid detections found across all patches. Skipping GeoJSON creation.")
@@ -89,13 +85,22 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
     boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
     scores_tensor = torch.tensor(all_scores, dtype=torch.float32)
 
-    # NMS is a crucial step to clean up results from overlapping inference patches
-    # We use a low IoU threshold to aggressively merge boxes that likely represent the same object.
-    nms_indices = torchvision.ops.nms(boxes_tensor, scores_tensor, iou_threshold=0.4)
+    # Run class-wise NMS to avoid suppressing detections across classes.
+    class_ids_array = np.array(all_class_ids)
+    kept_indices = []
+    for class_id in np.unique(class_ids_array):
+        class_mask = np.where(class_ids_array == class_id)[0]
+        class_boxes = boxes_tensor[class_mask]
+        class_scores = scores_tensor[class_mask]
+        class_keep = torchvision.ops.nms(class_boxes, class_scores, iou_threshold=0.4)
+        kept_indices.extend(class_mask[class_keep.cpu().numpy()].tolist())
 
-    clean_boxes = boxes_tensor[nms_indices].tolist()
-    clean_scores = scores_tensor[nms_indices].tolist()
-    clean_class_ids = np.array(all_class_ids)[nms_indices].tolist()
+    # Keep deterministic ordering by descending score.
+    kept_indices = sorted(kept_indices, key=lambda i: all_scores[i], reverse=True)
+
+    clean_boxes = boxes_tensor[kept_indices].tolist()
+    clean_scores = scores_tensor[kept_indices].tolist()
+    clean_class_ids = class_ids_array[kept_indices].tolist()
 
     logger.info(f"NMS reduced the number of detections from {len(all_boxes)} to {len(clean_boxes)}.")
 
