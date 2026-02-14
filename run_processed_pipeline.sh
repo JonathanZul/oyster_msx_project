@@ -21,9 +21,15 @@
 echo "Starting the processed data pipeline (skipping pre-processing)..."
 
 CONFIG_FILE=${1:-"config.yaml"} # Use the first argument ($1), or "config.yaml" if it's not set.
-SLIDES_PER_JOB=${2:-2}
+SLIDES_PER_JOB=${2:-1}
+MAX_ARRAY_PARALLEL=${3:-0}
 echo "Using configuration file: ${CONFIG_FILE}"
 echo "Slides per inference array task: ${SLIDES_PER_JOB}"
+if [ "${MAX_ARRAY_PARALLEL}" -gt 0 ]; then
+    echo "Max concurrent inference array tasks: ${MAX_ARRAY_PARALLEL}"
+else
+    echo "Max concurrent inference array tasks: unlimited"
+fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: Configuration file not found at '${CONFIG_FILE}'"
@@ -52,8 +58,12 @@ PENDING_COUNT=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FI
 POSTPROCESS_DEP_JOB=${job1_id}
 if [ "${PENDING_COUNT}" -gt 0 ]; then
     ARRAY_MAX=$(( (PENDING_COUNT + SLIDES_PER_JOB - 1) / SLIDES_PER_JOB - 1 ))
-    echo "Submitting Step 2: GPU Inference Array (${PENDING_COUNT} pending slides, index 0-${ARRAY_MAX})..."
-    job2_output=$(sbatch --array=0-${ARRAY_MAX} --dependency=afterok:${job1_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB})
+    ARRAY_SPEC="0-${ARRAY_MAX}"
+    if [ "${MAX_ARRAY_PARALLEL}" -gt 0 ]; then
+        ARRAY_SPEC="${ARRAY_SPEC}%${MAX_ARRAY_PARALLEL}"
+    fi
+    echo "Submitting Step 2: GPU Inference Array (${PENDING_COUNT} pending slides, array=${ARRAY_SPEC})..."
+    job2_output=$(sbatch --array=${ARRAY_SPEC} --dependency=afterok:${job1_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB})
     job2_id=$(echo $job2_output | awk '{print $4}')
 
     if [[ -z "$job2_id" ]]; then

@@ -90,7 +90,7 @@ training:
   device: "cuda:0" # HPC uses CUDA
   img_size: 640
   workers: 12
-  cache: false
+  cache: true
   amp: true
   extra_train_args:
     deterministic: false
@@ -103,7 +103,7 @@ inference:
   model_checkpoint: "/home/jezul/scratch/oyster_data/models/yolov8n_msx_oyster_run/weights/best.pt"
   patch_overlap: 0.2
   conf_threshold: 0.25
-  inference_batch_size: 16
+  inference_batch_size: 32
   max_patch_read_retries: 3
   patch_read_retry_sleep_seconds: 0.15
 
