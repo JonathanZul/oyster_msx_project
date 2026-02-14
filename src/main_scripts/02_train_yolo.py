@@ -143,17 +143,27 @@ def main():
         f"Parameters: Epochs={train_params['epochs']}, Batch Size={train_params['batch_size']}, Device='{train_params['device']}'")
 
     model_name = train_params['yolo_model'].split('/')[-1].replace('.pt', '') + '_msx_oyster_run'
+    train_kwargs = {
+        "data": str(dataset_yaml_path),
+        "epochs": train_params['epochs'],
+        "batch": train_params['batch_size'],
+        "device": train_params['device'],
+        "imgsz": train_params['img_size'],
+        "project": config['paths']['model_output_dir'],
+        "name": model_name,
+        "workers": train_params.get("workers", 8),
+        "cache": train_params.get("cache", False),
+        "amp": train_params.get("amp", True),
+    }
+
+    extra_train_args = train_params.get("extra_train_args", {})
+    if isinstance(extra_train_args, dict):
+        train_kwargs.update(extra_train_args)
+    elif extra_train_args:
+        logger.warning("Ignoring non-dict training.extra_train_args value.")
 
     try:
-        model.train(
-            data=str(dataset_yaml_path),
-            epochs=train_params['epochs'],
-            batch=train_params['batch_size'],
-            device=train_params['device'],
-            imgsz=train_params['img_size'],
-            project=config['paths']['model_output_dir'],
-            name=model_name
-        )
+        model.train(**train_kwargs)
         logger.info("--- Model Training Script Finished Successfully ---")
 
     except Exception as e:
