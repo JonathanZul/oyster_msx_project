@@ -7,9 +7,11 @@
 # scheduler, creating a dependency chain.
 #
 # Usage:
-#   ./run_full_pipeline.sh [path/to/your/config.yaml]
+#   ./run_full_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel]
 #
 # If no config path is provided, it defaults to 'config.yaml'.
+# slides_per_job defaults to 1 for maximum parallelism.
+# max_array_parallel defaults to 0 (unlimited array concurrency).
 # Make sure this script is executable: chmod +x run_full_pipeline.sh
 # ====================================================================
 

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Legacy script: retained for compatibility. For faster HPC runs, prefer:
+# 1) submission_scripts/submit_gpu_segment.sh
+# 2) submission_scripts/submit_cpu_create_dataset.sh
 #SBATCH --time=0-05:00:00        # 3 hours
 #SBATCH --account=def-agodbout
 #SBATCH --gres=gpu:1

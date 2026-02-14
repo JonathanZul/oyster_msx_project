@@ -12,10 +12,12 @@
 # exists in your scratch space at the path specified in config.yaml.
 #
 # Usage:
-#   ./run_processed_pipeline.sh [path/to/your/config.yaml]
+#   ./run_processed_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel]
 #
 # Make sure this script is executable:
 #   chmod +x run_processed_pipeline.sh
+# slides_per_job defaults to 1 for maximum parallelism.
+# max_array_parallel defaults to 0 (unlimited array concurrency).
 # ====================================================================
 
 echo "Starting the processed data pipeline (skipping pre-processing)..."
