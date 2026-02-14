@@ -119,7 +119,7 @@ def run_batched_prediction(
     return batch_detections
 
 
-def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
+def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, batch_size_override: int | None = None):
     """
     Runs inference on a single WSI by breaking it into patches.
 
@@ -134,7 +134,7 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger):
     params = config['inference']
     patch_size = config['dataset_creation']['patch_size']  # Use same patch size as training
     patch_overlap = params['patch_overlap']
-    batch_size = int(params.get("inference_batch_size", 16))
+    batch_size = int(batch_size_override if batch_size_override is not None else params.get("inference_batch_size", 16))
     max_read_retries = int(params.get("max_patch_read_retries", 3))
     retry_sleep_s = float(params.get("patch_read_retry_sleep_seconds", 0.15))
     if batch_size < 1:
@@ -280,6 +280,12 @@ def main():
         action="store_true",
         help="List all unannotated slides and exit. Useful for planning batch jobs."
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override inference batch size for patch-level prediction."
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -360,7 +366,7 @@ def main():
 
     # Run inference on each selected WSI
     for wsi_path in slides_to_process:
-        process_single_wsi_inference(wsi_path, model, config, logger)
+        process_single_wsi_inference(wsi_path, model, config, logger, batch_size_override=args.batch_size)
 
     logger.info("--- Inference Script Finished ---")
 
