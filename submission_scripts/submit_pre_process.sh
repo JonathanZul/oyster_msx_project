@@ -23,10 +23,20 @@ source .venv/bin/activate
 # --- Run CPU-bound Scripts ---
 echo "Step 00: Segmenting Oysters..."
 python -m src.main_scripts.s00_segment_with_sam --config ${CONFIG_FILE}
-echo "Step 00 finished with exit code: $?"
+STEP00_EXIT=$?
+echo "Step 00 finished with exit code: ${STEP00_EXIT}"
+if [ ${STEP00_EXIT} -ne 0 ]; then
+    echo "ERROR: Step 00 failed. Aborting preprocessing job."
+    exit ${STEP00_EXIT}
+fi
 
 echo "Step 01: Creating YOLO Dataset..."
 python -m src.main_scripts.01_create_dataset --config ${CONFIG_FILE}
-echo "Step 01 finished with exit code: $?"
+STEP01_EXIT=$?
+echo "Step 01 finished with exit code: ${STEP01_EXIT}"
+if [ ${STEP01_EXIT} -ne 0 ]; then
+    echo "ERROR: Step 01 failed."
+    exit ${STEP01_EXIT}
+fi
 
 echo "CPU Pre-processing Job Finished: $(date)"

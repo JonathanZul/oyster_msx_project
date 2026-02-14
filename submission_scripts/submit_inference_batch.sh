@@ -10,7 +10,7 @@
 #SBATCH --mail-type=END,FAIL
 
 # Usage:
-#   sbatch --array=0-N submit_inference_batch.sh config_hpc.yaml [slides_per_job]
+#   sbatch --array=0-N submit_inference_batch.sh config_hpc.yaml [slides_per_job] [batch_size]
 #
 # Examples:
 #   # Process 27 slides, 1 slide per job (27 jobs):
@@ -27,6 +27,7 @@
 
 CONFIG_FILE=${1:-config_hpc.yaml}
 SLIDES_PER_JOB=${2:-1}
+BATCH_SIZE=${3:-}
 
 echo "=== Inference Batch Job ==="
 echo "Job ID: $SLURM_JOB_ID"
@@ -35,6 +36,9 @@ echo "Started: $(date)"
 echo "Host: $(hostname)"
 echo "Config: $CONFIG_FILE"
 echo "Slides per job: $SLIDES_PER_JOB"
+if [ -n "$BATCH_SIZE" ]; then
+    echo "Inference batch size override: $BATCH_SIZE"
+fi
 echo "=========================="
 
 module load gcc cuda opencv python scipy-stack
@@ -44,10 +48,16 @@ echo "Python: $(which python)"
 echo "PyTorch CUDA: $(python -c 'import torch; print(torch.cuda.is_available())')"
 nvidia-smi
 
-python -m src.main_scripts.03_run_inference \
-    --config ${CONFIG_FILE} \
-    --slide-index ${SLURM_ARRAY_TASK_ID} \
-    --slides-per-job ${SLIDES_PER_JOB}
+CMD=(python -m src.main_scripts.03_run_inference
+    --config "${CONFIG_FILE}"
+    --slide-index "${SLURM_ARRAY_TASK_ID}"
+    --slides-per-job "${SLIDES_PER_JOB}")
+
+if [ -n "$BATCH_SIZE" ]; then
+    CMD+=(--batch-size "$BATCH_SIZE")
+fi
+
+"${CMD[@]}"
 
 EXIT_CODE=$?
 echo "=== Job Finished: $(date) ==="
