@@ -4,12 +4,10 @@ import json
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-import torch
 import tifffile
 import zarr
 import numpy as np
 from pathlib import Path
-from ultralytics import YOLO
 from tqdm import tqdm
 
 from src.utils.file_handling import load_config
@@ -214,6 +212,7 @@ def process_single_wsi_inference(
         logger: The logger instance for logging messages.
     """
     logger.info(f"--- Starting inference on: {wsi_path.name} ---")
+    import torch
 
     params = config['inference']
     patch_size = config['dataset_creation']['patch_size']  # Use same patch size as training
@@ -494,6 +493,7 @@ def main():
             return
 
     try:
+        from ultralytics import YOLO
         logger.info(f"Loading trained model from: {model_path}")
         model = YOLO(model_path)
     except Exception as e:

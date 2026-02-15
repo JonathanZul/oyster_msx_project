@@ -120,10 +120,17 @@ LIST_ARGS=(--config ${CONFIG_FILE} --list-slides)
 if [ "${INCLUDE_ANNOTATED}" = "1" ]; then
     LIST_ARGS+=(--include-annotated)
 fi
+LIST_OUTPUT=$(python -m src.main_scripts.03_run_inference "${LIST_ARGS[@]}" 2>&1)
+LIST_EXIT=$?
+if [ ${LIST_EXIT} -ne 0 ]; then
+    echo "ERROR: Failed to list inference slides (exit ${LIST_EXIT})."
+    echo "${LIST_OUTPUT}"
+    exit 1
+fi
 if [ "${FORCE_INFER}" = "1" ]; then
-    TOTAL_LISTED=$(python -m src.main_scripts.03_run_inference "${LIST_ARGS[@]}" 2>/dev/null | grep -E -c '^[0-9]+:' || true)
+    TOTAL_LISTED=$(echo "${LIST_OUTPUT}" | grep -E -c '^[0-9]+:' || true)
 else
-    PENDING_COUNT=$(python -m src.main_scripts.03_run_inference "${LIST_ARGS[@]}" 2>/dev/null | grep -c "\[PENDING\]" || true)
+    PENDING_COUNT=$(echo "${LIST_OUTPUT}" | grep -c "\[PENDING\]" || true)
 fi
 
 POSTPROCESS_DEP_JOB=${job3_id}
