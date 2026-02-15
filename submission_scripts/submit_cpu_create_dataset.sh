@@ -6,7 +6,7 @@
 #SBATCH --job-name=oyster-create-ds
 #SBATCH --output=hpc_outputs/%x-%j_cpu_create_dataset.out
 #SBATCH --mail-user=jezulluna@upei.ca
-#SBATCH --mail-type=ALL
+#SBATCH --mail-type=END,FAIL
 
 # Usage:
 #   sbatch submit_cpu_create_dataset.sh config_hpc.yaml

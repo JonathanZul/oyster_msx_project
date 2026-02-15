@@ -7,7 +7,7 @@
 #SBATCH --job-name=oyster-gpu-pipeline
 #SBATCH --output=hpc_outputs/%x-%j_gpu_train_infer.out
 #SBATCH --mail-user=jezulluna@upei.ca
-#SBATCH --mail-type=ALL
+#SBATCH --mail-type=END,FAIL
 
 # Usage:
 #   sbatch submit_gpu_train_infer.sh config_hpc.yaml [--skip-train] [--skip-infer]

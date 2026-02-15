@@ -10,7 +10,7 @@
 #SBATCH --job-name=oyster-pre-process
 #SBATCH --output=hpc_outputs/%x-%j_preprocessing.out
 #SBATCH --mail-user=jezulluna@upei.ca
-#SBATCH --mail-type=ALL
+#SBATCH --mail-type=END,FAIL
 
 CONFIG_FILE=$1
 

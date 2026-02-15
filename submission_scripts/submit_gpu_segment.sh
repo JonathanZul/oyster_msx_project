@@ -7,7 +7,7 @@
 #SBATCH --job-name=oyster-segment
 #SBATCH --output=hpc_outputs/%x-%j_gpu_segment.out
 #SBATCH --mail-user=jezulluna@upei.ca
-#SBATCH --mail-type=ALL
+#SBATCH --mail-type=END,FAIL
 
 # Usage:
 #   sbatch submit_gpu_segment.sh config_hpc.yaml
