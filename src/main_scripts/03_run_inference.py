@@ -127,7 +127,14 @@ def run_batched_prediction(
     return batch_detections
 
 
-def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, batch_size_override: int | None = None):
+def process_single_wsi_inference(
+    wsi_path: Path,
+    model,
+    config: dict,
+    logger,
+    batch_size_override: int | None = None,
+    force: bool = False
+):
     """
     Runs inference on a single WSI by breaking it into patches.
 
@@ -173,9 +180,13 @@ def process_single_wsi_inference(wsi_path: Path, model, config: dict, logger, ba
     detections_path = slide_output_dir / "detections.jsonl"
 
     # Check if this slide has already been completed
-    if is_slide_completed(slide_output_dir):
+    completion_marker = slide_output_dir / ".completed"
+    if completion_marker.exists() and not force:
         logger.info(f"Slide {wsi_path.name} already completed. Skipping.")
         return
+    if completion_marker.exists() and force:
+        completion_marker.unlink()
+        logger.info(f"Force mode enabled. Clearing existing completion marker for {wsi_path.name}.")
 
     if detections_path.exists():
         detections_path.unlink()
@@ -343,6 +354,11 @@ def main():
         default=None,
         help="Override inference batch size for patch-level prediction."
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run inference even for slides already marked completed."
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -423,7 +439,14 @@ def main():
 
     # Run inference on each selected WSI
     for wsi_path in slides_to_process:
-        process_single_wsi_inference(wsi_path, model, config, logger, batch_size_override=args.batch_size)
+        process_single_wsi_inference(
+            wsi_path,
+            model,
+            config,
+            logger,
+            batch_size_override=args.batch_size,
+            force=args.force
+        )
 
     logger.info("--- Inference Script Finished ---")
 

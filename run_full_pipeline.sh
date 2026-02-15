@@ -7,11 +7,12 @@
 # scheduler, creating a dependency chain.
 #
 # Usage:
-#   ./run_full_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel]
+#   ./run_full_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel] [force_infer]
 #
 # If no config path is provided, it defaults to 'config.yaml'.
 # slides_per_job defaults to 1 for maximum parallelism.
 # max_array_parallel defaults to 0 (unlimited array concurrency).
+# force_infer defaults to 0. Set to 1 to force Step 4 re-inference.
 # Make sure this script is executable: chmod +x run_full_pipeline.sh
 # ====================================================================
 
@@ -20,12 +21,16 @@ echo "Starting the full Oyster MSX pipeline..."
 CONFIG_FILE=${1:-"config.yaml"} # Use the first argument ($1), or "config.yaml" if it's not set.
 SLIDES_PER_JOB=${2:-1}
 MAX_ARRAY_PARALLEL=${3:-0}
+FORCE_INFER=${4:-0}
 echo "Using configuration file: ${CONFIG_FILE}"
 echo "Slides per inference array task: ${SLIDES_PER_JOB}"
 if [ "${MAX_ARRAY_PARALLEL}" -gt 0 ]; then
     echo "Max concurrent inference array tasks: ${MAX_ARRAY_PARALLEL}"
 else
     echo "Max concurrent inference array tasks: unlimited"
+fi
+if [ "${FORCE_INFER}" = "1" ]; then
+    echo "Force inference submission: enabled"
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -71,20 +76,34 @@ echo "GPU training job submitted. Job ID: ${job3_id}. Will run after job ${job2_
 
 # --- Step 4: Submit array-based inference jobs ---
 PENDING_COUNT=0
+TOTAL_LISTED=0
 if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate >/dev/null 2>&1
 fi
-PENDING_COUNT=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FILE} --list-slides 2>/dev/null | grep -c "\[PENDING\]" || true)
+if [ "${FORCE_INFER}" = "1" ]; then
+    TOTAL_LISTED=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FILE} --list-slides 2>/dev/null | grep -E -c '^[0-9]+:' || true)
+else
+    PENDING_COUNT=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FILE} --list-slides 2>/dev/null | grep -c "\[PENDING\]" || true)
+fi
 
 POSTPROCESS_DEP_JOB=${job3_id}
-if [ "${PENDING_COUNT}" -gt 0 ]; then
-    ARRAY_MAX=$(( (PENDING_COUNT + SLIDES_PER_JOB - 1) / SLIDES_PER_JOB - 1 ))
+TARGET_COUNT=${PENDING_COUNT}
+if [ "${FORCE_INFER}" = "1" ]; then
+    TARGET_COUNT=${TOTAL_LISTED}
+fi
+
+if [ "${TARGET_COUNT}" -gt 0 ]; then
+    ARRAY_MAX=$(( (TARGET_COUNT + SLIDES_PER_JOB - 1) / SLIDES_PER_JOB - 1 ))
     ARRAY_SPEC="0-${ARRAY_MAX}"
     if [ "${MAX_ARRAY_PARALLEL}" -gt 0 ]; then
         ARRAY_SPEC="${ARRAY_SPEC}%${MAX_ARRAY_PARALLEL}"
     fi
-    echo "Submitting Step 4: GPU Inference Array (${PENDING_COUNT} pending slides, array=${ARRAY_SPEC})..."
-    job4_output=$(sbatch --array=${ARRAY_SPEC} --dependency=afterok:${job3_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB})
+    if [ "${FORCE_INFER}" = "1" ]; then
+        echo "Submitting Step 4: GPU Inference Array (force mode; ${TARGET_COUNT} listed slides, array=${ARRAY_SPEC})..."
+    else
+        echo "Submitting Step 4: GPU Inference Array (${TARGET_COUNT} pending slides, array=${ARRAY_SPEC})..."
+    fi
+    job4_output=$(sbatch --array=${ARRAY_SPEC} --dependency=afterok:${job3_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB} "" ${FORCE_INFER})
     job4_id=$(echo $job4_output | awk '{print $4}')
 
     if [[ -z "$job4_id" ]]; then
@@ -95,7 +114,11 @@ if [ "${PENDING_COUNT}" -gt 0 ]; then
     echo "GPU inference array submitted. Job ID: ${job4_id}. Will run after job ${job3_id} completes."
     POSTPROCESS_DEP_JOB=${job4_id}
 else
-    echo "No pending slides found for inference. Skipping Step 4 inference submission."
+    if [ "${FORCE_INFER}" = "1" ]; then
+        echo "No slides listed for inference even in force mode. Skipping Step 4 inference submission."
+    else
+        echo "No pending slides found for inference. Skipping Step 4 inference submission."
+    fi
 fi
 
 # --- Step 5: Submit the CPU post-processing job ---
