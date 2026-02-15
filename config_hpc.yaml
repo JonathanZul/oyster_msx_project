@@ -78,6 +78,8 @@ dataset_creation:
   classes:
     "Distractor": 0
     "Plasmodia": 1
+  class_aliases:
+    "MSX Plasmodia": "Plasmodia"
 
 # 4. Training Parameters (YOLO)
 # Parameters controlling the `02_train_yolo.py` script.

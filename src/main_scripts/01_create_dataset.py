@@ -20,6 +20,43 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
+def _normalize_class_name(name: str | None) -> str:
+    """Normalize annotation class names for robust matching."""
+    if not name:
+        return ""
+    return " ".join(str(name).strip().lower().split())
+
+
+def _resolve_class_id(
+    ann_class_name: str | None,
+    class_map: dict,
+    class_aliases: dict | None = None
+):
+    """
+    Resolves an annotation class name to a configured class_id.
+    Supports exact matches plus case-insensitive alias-based matching.
+    """
+    if ann_class_name in class_map:
+        return class_map[ann_class_name]
+
+    normalized_to_id = {_normalize_class_name(k): v for k, v in class_map.items()}
+    alias_map = class_aliases or {}
+
+    normalized_name = _normalize_class_name(ann_class_name)
+    if normalized_name in normalized_to_id:
+        return normalized_to_id[normalized_name]
+
+    alias_target = alias_map.get(ann_class_name, alias_map.get(normalized_name))
+    if alias_target is None:
+        return None
+
+    # Alias value can be a class name or direct class id.
+    if isinstance(alias_target, int):
+        return alias_target
+
+    return class_map.get(alias_target, normalized_to_id.get(_normalize_class_name(alias_target)))
+
+
 def setup_directories(base_path: Path, append_mode: bool, logger):
     """
     Cleans and creates the necessary directory structure for the YOLO dataset.
@@ -192,6 +229,7 @@ def process_single_wsi(
 
             patch_size = config["dataset_creation"]["patch_size"]
             class_map = config["dataset_creation"]["classes"]
+            class_aliases = config["dataset_creation"].get("class_aliases", {})
             yolo_base_path = Path(config["paths"]["yolo_dataset"])
             patches_created = 0
 
@@ -200,7 +238,8 @@ def process_single_wsi(
                     ann_class_name = (
                         ann["properties"].get("classification", {}).get("name")
                     )
-                    if ann_class_name not in class_map:
+                    class_id = _resolve_class_id(ann_class_name, class_map, class_aliases)
+                    if class_id is None:
                         if not hasattr(process_single_wsi, "warned_classes"):
                             process_single_wsi.warned_classes = set()
                         if ann_class_name not in process_single_wsi.warned_classes:
@@ -208,7 +247,6 @@ def process_single_wsi(
                                            f"Ensure this name exists in your config.yaml `classes` map.")
                             process_single_wsi.warned_classes.add(ann_class_name)
                         continue
-                    class_id = class_map[ann_class_name]
 
                     oyster_id = get_oyster_id_for_annotation(
                         ann, parent_masks, downsample_factor, logger
