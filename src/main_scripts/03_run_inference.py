@@ -16,6 +16,75 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
+def collect_target_slides(config: dict, include_annotated: bool = False):
+    """
+    Collects raw WSIs and returns the subset targeted for inference.
+
+    Returns:
+        tuple[list[Path], set[str], list[Path], int]:
+            - all usable raw WSI paths
+            - annotated stems from GeoJSON files
+            - target WSI paths for inference
+            - count of raw WSIs that already have annotation matches
+    """
+    raw_wsis_dir = Path(config['paths']['raw_wsis'])
+    qupath_exports_dir = Path(config['paths']['qupath_exports'])
+
+    annotated_stems = {f.stem.replace('.ome', '') for f in qupath_exports_dir.glob("*.geojson")}
+    all_wsi_paths = list(raw_wsis_dir.glob("*.tif")) + list(raw_wsis_dir.glob("*.vsi"))
+    all_usable_wsi_paths = sorted(
+        [p for p in all_wsi_paths if not p.name.startswith('.')],
+        key=lambda p: p.name
+    )
+
+    matched_annotated_count = sum(
+        1 for p in all_usable_wsi_paths if p.stem.replace('.ome', '') in annotated_stems
+    )
+
+    if include_annotated:
+        target_wsis = all_usable_wsi_paths
+    else:
+        target_wsis = [
+            p for p in all_usable_wsi_paths
+            if p.stem.replace('.ome', '') not in annotated_stems
+        ]
+
+    return all_usable_wsi_paths, annotated_stems, target_wsis, matched_annotated_count
+
+
+def print_slide_selection_debug(config: dict, target_wsis: list[Path], all_usable_wsi_paths: list[Path], annotated_stems: set[str], matched_annotated_count: int):
+    """
+    Prints a compact debug report for slide-selection logic.
+    """
+    inference_root = Path(config['paths']['inference_results'])
+    done_count = 0
+    for p in target_wsis:
+        slide_output_dir = inference_root / p.stem.replace('.ome', '')
+        if is_slide_completed(slide_output_dir):
+            done_count += 1
+    pending_count = len(target_wsis) - done_count
+
+    print("=== Inference Slide Selection Debug ===")
+    print(f"raw_wsis_dir: {config['paths']['raw_wsis']}")
+    print(f"qupath_exports_dir: {config['paths']['qupath_exports']}")
+    print(f"inference_results_dir: {config['paths']['inference_results']}")
+    print(f"total_raw_wsis: {len(all_usable_wsi_paths)}")
+    print(f"total_geojson_annotation_files: {len(list(Path(config['paths']['qupath_exports']).glob('*.geojson')))}")
+    print(f"unique_annotated_stems: {len(annotated_stems)}")
+    print(f"raw_wsis_with_annotation_match: {matched_annotated_count}")
+    print(f"target_slides_for_inference: {len(target_wsis)}")
+    print(f"target_slides_done_marker: {done_count}")
+    print(f"target_slides_pending_marker: {pending_count}")
+
+    if target_wsis:
+        print("target_slide_sample:")
+        for p in target_wsis[:15]:
+            status = "[DONE]" if is_slide_completed(Path(config['paths']['inference_results']) / p.stem.replace('.ome', '')) else "[PENDING]"
+            print(f"  - {p.name} {status}")
+    else:
+        print("target_slide_sample: none")
+
+
 def is_slide_completed(slide_output_dir: Path) -> bool:
     """
     Checks if a slide has already been fully processed by looking for a completion marker.
@@ -346,7 +415,7 @@ def main():
     parser.add_argument(
         "--list-slides",
         action="store_true",
-        help="List all unannotated slides and exit. Useful for planning batch jobs."
+        help="List all target slides and exit. Useful for planning batch jobs."
     )
     parser.add_argument(
         "--batch-size",
@@ -359,6 +428,16 @@ def main():
         action="store_true",
         help="Re-run inference even for slides already marked completed."
     )
+    parser.add_argument(
+        "--include-annotated",
+        action="store_true",
+        help="Include slides even if they already have matching GeoJSON annotations."
+    )
+    parser.add_argument(
+        "--debug-slide-selection",
+        action="store_true",
+        help="Print detailed counts used by slide-selection logic and exit."
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -367,6 +446,33 @@ def main():
 
     logger = setup_logging(Path(config['paths']['logs']), '03_run_inference')
     logger.info("--- Starting Inference Script ---")
+
+    all_usable_wsi_paths, annotated_stems, target_wsis, matched_annotated_count = collect_target_slides(
+        config,
+        include_annotated=args.include_annotated
+    )
+
+    if args.debug_slide_selection:
+        print_slide_selection_debug(config, target_wsis, all_usable_wsi_paths, annotated_stems, matched_annotated_count)
+        return
+
+    # Handle --list-slides flag
+    if args.list_slides:
+        logger.info("Slide listing mode. Printing slides and exiting.")
+        for i, wsi_path in enumerate(target_wsis):
+            completed = is_slide_completed(
+                Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
+            )
+            status = "[DONE]" if completed else "[PENDING]"
+            print(f"{i}: {wsi_path.name} {status}")
+        return
+
+    if not target_wsis:
+        if args.include_annotated:
+            logger.info("No usable WSIs found to process.")
+        else:
+            logger.info("No unannotated WSIs found to process. All slides appear to have a corresponding GeoJSON file.")
+        return
 
     # 1. Load the trained YOLO model
     model_path = Path(config['inference']['model_checkpoint'])
@@ -394,48 +500,18 @@ def main():
         logger.critical(f"Failed to load YOLO model. Error: {e}", exc_info=True)
         return
 
-    # 2. Find all WSI files that have NOT been annotated yet
-    raw_wsis_dir = Path(config['paths']['raw_wsis'])
-    qupath_exports_dir = Path(config['paths']['qupath_exports'])
+    logger.info(f"Found {len(target_wsis)} target WSIs to process.")
 
-    annotated_stems = {f.stem.replace('.ome', '') for f in qupath_exports_dir.glob("*.geojson")}
-    all_wsi_paths = list(raw_wsis_dir.glob("*.tif")) + list(raw_wsis_dir.glob("*.vsi"))
-    all_usable_wsi_paths = [p for p in all_wsi_paths if not p.name.startswith('.')]
-
-    unannotated_wsis = [
-        p for p in all_usable_wsi_paths
-        if p.stem.replace('.ome', '') not in annotated_stems
-    ]
-
-    if not unannotated_wsis:
-        logger.info("No unannotated WSIs found to process. All slides appear to have a corresponding GeoJSON file.")
-        return
-
-    # Sort slides for consistent ordering across batch jobs
-    unannotated_wsis = sorted(unannotated_wsis, key=lambda p: p.name)
-    logger.info(f"Found {len(unannotated_wsis)} unannotated WSIs to process.")
-
-    # Handle --list-slides flag
-    if args.list_slides:
-        logger.info("Slide listing mode. Printing slides and exiting.")
-        for i, wsi_path in enumerate(unannotated_wsis):
-            completed = is_slide_completed(
-                Path(config['paths']['inference_results']) / wsi_path.stem.replace('.ome', '')
-            )
-            status = "[DONE]" if completed else "[PENDING]"
-            print(f"{i}: {wsi_path.name} {status}")
-        return
-
-    # 3. Determine which slides to process based on arguments
+    # 2. Determine which slides to process based on arguments
     if args.slide_index is not None:
         # Batch mode: process only slides in the specified range
         start_idx = args.slide_index * args.slides_per_job
         end_idx = start_idx + args.slides_per_job
-        slides_to_process = unannotated_wsis[start_idx:end_idx]
+        slides_to_process = target_wsis[start_idx:end_idx]
         logger.info(f"Batch mode: processing slides {start_idx} to {end_idx-1} ({len(slides_to_process)} slides)")
     else:
         # Normal mode: process all slides
-        slides_to_process = unannotated_wsis
+        slides_to_process = target_wsis
 
     # Run inference on each selected WSI
     for wsi_path in slides_to_process:

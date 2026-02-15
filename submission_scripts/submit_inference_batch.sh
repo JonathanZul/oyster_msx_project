@@ -10,7 +10,7 @@
 #SBATCH --mail-type=END,FAIL
 
 # Usage:
-#   sbatch --array=0-N submit_inference_batch.sh config_hpc.yaml [slides_per_job] [batch_size] [force]
+#   sbatch --array=0-N submit_inference_batch.sh config_hpc.yaml [slides_per_job] [batch_size] [force] [include_annotated]
 #
 # Examples:
 #   # Process 27 slides, 1 slide per job (27 jobs):
@@ -29,6 +29,7 @@ CONFIG_FILE=${1:-config_hpc.yaml}
 SLIDES_PER_JOB=${2:-1}
 BATCH_SIZE=${3:-}
 FORCE_INFER=${4:-0}
+INCLUDE_ANNOTATED=${5:-0}
 
 echo "=== Inference Batch Job ==="
 echo "Job ID: $SLURM_JOB_ID"
@@ -42,6 +43,9 @@ if [ -n "$BATCH_SIZE" ]; then
 fi
 if [ "$FORCE_INFER" = "1" ]; then
     echo "Force inference: enabled"
+fi
+if [ "$INCLUDE_ANNOTATED" = "1" ]; then
+    echo "Include annotated slides: enabled"
 fi
 echo "=========================="
 
@@ -62,6 +66,9 @@ if [ -n "$BATCH_SIZE" ]; then
 fi
 if [ "$FORCE_INFER" = "1" ]; then
     CMD+=(--force)
+fi
+if [ "$INCLUDE_ANNOTATED" = "1" ]; then
+    CMD+=(--include-annotated)
 fi
 
 "${CMD[@]}"

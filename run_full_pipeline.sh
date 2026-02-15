@@ -7,13 +7,14 @@
 # scheduler, creating a dependency chain.
 #
 # Usage:
-#   ./run_full_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel] [force_infer] [skip_segmentation]
+#   ./run_full_pipeline.sh [path/to/your/config.yaml] [slides_per_job] [max_array_parallel] [force_infer] [skip_segmentation] [include_annotated]
 #
 # If no config path is provided, it defaults to 'config.yaml'.
 # slides_per_job defaults to 1 for maximum parallelism.
 # max_array_parallel defaults to 0 (unlimited array concurrency).
 # force_infer defaults to 0. Set to 1 to force Step 4 re-inference.
 # skip_segmentation defaults to 0. Set to 1 to skip Step 1.
+# include_annotated defaults to 0. Set to 1 to run inference on all raw WSIs.
 # Make sure this script is executable: chmod +x run_full_pipeline.sh
 # ====================================================================
 
@@ -32,6 +33,7 @@ SLIDES_PER_JOB=${2:-1}
 MAX_ARRAY_PARALLEL=${3:-0}
 FORCE_INFER=${4:-0}
 SKIP_SEGMENTATION=${5:-0}
+INCLUDE_ANNOTATED=${6:-0}
 echo "Using configuration file: ${CONFIG_FILE}"
 echo "Slides per inference array task: ${SLIDES_PER_JOB}"
 if [ "${MAX_ARRAY_PARALLEL}" -gt 0 ]; then
@@ -44,6 +46,9 @@ if [ "${FORCE_INFER}" = "1" ]; then
 fi
 if [ "${SKIP_SEGMENTATION}" = "1" ]; then
     echo "Skip segmentation: enabled"
+fi
+if [ "${INCLUDE_ANNOTATED}" = "1" ]; then
+    echo "Include annotated slides: enabled"
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -111,10 +116,14 @@ TOTAL_LISTED=0
 if [ -f ".venv/bin/activate" ]; then
     source .venv/bin/activate >/dev/null 2>&1
 fi
+LIST_ARGS=(--config ${CONFIG_FILE} --list-slides)
+if [ "${INCLUDE_ANNOTATED}" = "1" ]; then
+    LIST_ARGS+=(--include-annotated)
+fi
 if [ "${FORCE_INFER}" = "1" ]; then
-    TOTAL_LISTED=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FILE} --list-slides 2>/dev/null | grep -E -c '^[0-9]+:' || true)
+    TOTAL_LISTED=$(python -m src.main_scripts.03_run_inference "${LIST_ARGS[@]}" 2>/dev/null | grep -E -c '^[0-9]+:' || true)
 else
-    PENDING_COUNT=$(python -m src.main_scripts.03_run_inference --config ${CONFIG_FILE} --list-slides 2>/dev/null | grep -c "\[PENDING\]" || true)
+    PENDING_COUNT=$(python -m src.main_scripts.03_run_inference "${LIST_ARGS[@]}" 2>/dev/null | grep -c "\[PENDING\]" || true)
 fi
 
 POSTPROCESS_DEP_JOB=${job3_id}
@@ -134,7 +143,7 @@ if [ "${TARGET_COUNT}" -gt 0 ]; then
     else
         echo "Submitting Step 4: GPU Inference Array (${TARGET_COUNT} pending slides, array=${ARRAY_SPEC})..."
     fi
-    job4_output=$(sbatch --array=${ARRAY_SPEC} --dependency=afterok:${job3_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB} "" ${FORCE_INFER})
+    job4_output=$(sbatch --array=${ARRAY_SPEC} --dependency=afterok:${job3_id} submission_scripts/submit_inference_batch.sh ${CONFIG_FILE} ${SLIDES_PER_JOB} "" ${FORCE_INFER} ${INCLUDE_ANNOTATED})
     job4_id=$(echo $job4_output | awk '{print $4}')
 
     if [[ -z "$job4_id" ]]; then
