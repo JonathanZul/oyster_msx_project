@@ -222,40 +222,175 @@ def setup_directories(base_path: Path, append_mode: bool, logger):
     (base_path / "labels/all").mkdir(parents=True, exist_ok=True)
 
 
-def get_oyster_id_for_annotation(annotation, parent_masks, downsample_factor, logger):
+def _create_assignment_context(parent_masks: dict, boundary_tolerance_px: int):
     """
-    Determines which oyster an annotation belongs to by checking against instance masks.
-
-    Args:
-        annotation (dict): A single GeoJSON feature.
-        parent_masks (dict): A dictionary mapping oyster_id to its mask array.
-        downsample_factor (float): The factor to scale high-res coordinates down.
-        logger: The logger instance.
-
-    Returns:
-        int: The ID of the oyster (e.g., 1, 2) or None if not found.
+    Prepares mask and contour data for robust annotation-to-oyster assignment.
     """
-    geom = shape(annotation["geometry"])
-    centroid = geom.centroid  # This gives the center of the annotation
-
-    # Scale the high-res annotation centroid down to the low-res mask coordinate system
-    scaled_centroid_x = int(centroid.x / downsample_factor)
-    scaled_centroid_y = int(centroid.y / downsample_factor)
+    context = {}
+    tol = max(0, int(boundary_tolerance_px))
+    kernel = None
+    if tol > 0:
+        ksize = (2 * tol + 1, 2 * tol + 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, ksize)
 
     for oyster_id, mask in parent_masks.items():
-        # Check if the scaled coordinate is within the mask bounds
-        if (
-            0 <= scaled_centroid_y < mask.shape[0]
-            and 0 <= scaled_centroid_x < mask.shape[1]
-        ):
-            # Check if the pixel at that coordinate in the mask is white (part of the oyster)
-            if mask[scaled_centroid_y, scaled_centroid_x] > 0:
-                return oyster_id
+        mask_binary = (mask > 0).astype(np.uint8)
+        mask_u8 = (mask_binary * 255).astype(np.uint8)
+        contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        dilated = cv2.dilate(mask_binary, kernel, iterations=1) if kernel is not None else mask_binary
+        context[oyster_id] = {
+            "mask": mask_binary,
+            "dilated": dilated,
+            "contours": contours,
+        }
+    return context
 
-    logger.warning(
-        f"Annotation at ({centroid.x}, {centroid.y}) did not fall within any oyster mask. Skipping."
+
+def _compute_best_signed_distance(contours, x: int, y: int) -> float:
+    """
+    Returns the best signed contour distance for a point.
+    Positive means inside, negative means outside.
+    """
+    if not contours:
+        return float("-inf")
+    point = (float(x), float(y))
+    return max(cv2.pointPolygonTest(cnt, point, True) for cnt in contours)
+
+
+def _assign_from_scaled_point(
+    x: int,
+    y: int,
+    assignment_context: dict,
+    nearest_oyster_max_distance_px: float
+):
+    """
+    Assigns an oyster ID using:
+      1) direct mask hit
+      2) boundary-tolerant dilated mask hit
+      3) nearest contour fallback within threshold
+    """
+    if not assignment_context:
+        return None, "no_context", float("-inf")
+
+    any_entry = next(iter(assignment_context.values()))
+    h, w = any_entry["mask"].shape
+    if not (0 <= y < h and 0 <= x < w):
+        return None, "out_of_bounds", float("-inf")
+
+    direct_scores = {}
+    tolerant_scores = {}
+    nearest_scores = {}
+
+    for oyster_id, entry in assignment_context.items():
+        signed_distance = _compute_best_signed_distance(entry["contours"], x, y)
+        nearest_scores[oyster_id] = signed_distance
+
+        if entry["mask"][y, x] > 0:
+            direct_scores[oyster_id] = signed_distance
+        elif entry["dilated"][y, x] > 0:
+            tolerant_scores[oyster_id] = signed_distance
+
+    if direct_scores:
+        oyster_id = max(direct_scores, key=direct_scores.get)
+        return oyster_id, "direct", direct_scores[oyster_id]
+
+    if tolerant_scores:
+        oyster_id = max(tolerant_scores, key=tolerant_scores.get)
+        return oyster_id, "boundary_tolerant", tolerant_scores[oyster_id]
+
+    if nearest_scores and nearest_oyster_max_distance_px > 0:
+        oyster_id = max(nearest_scores, key=nearest_scores.get)
+        best_signed = nearest_scores[oyster_id]
+        if best_signed >= -float(nearest_oyster_max_distance_px):
+            return oyster_id, "nearest_fallback", best_signed
+        return None, "outside_fallback_radius", best_signed
+
+    best_signed = max(nearest_scores.values()) if nearest_scores else float("-inf")
+    return None, "no_mask_match", best_signed
+
+
+def _save_skipped_annotations_overlay(
+    slide_stem: str,
+    assignment_context: dict,
+    skipped_points: list[dict],
+    output_dir: Path,
+    max_points: int,
+    logger
+):
+    """
+    Saves a debug overlay showing mask regions and skipped annotation centroids.
+    """
+    if not skipped_points or not assignment_context:
+        return
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    any_entry = next(iter(assignment_context.values()))
+    h, w = any_entry["mask"].shape
+    canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+    mask_colors = [(255, 80, 80), (80, 255, 80), (80, 80, 255), (255, 220, 80)]
+    for idx, (oyster_id, entry) in enumerate(sorted(assignment_context.items(), key=lambda item: item[0])):
+        color = mask_colors[idx % len(mask_colors)]
+        overlay = np.zeros_like(canvas)
+        overlay[entry["mask"] > 0] = color
+        canvas = cv2.addWeighted(canvas, 1.0, overlay, 0.30, 0)
+        if entry["contours"]:
+            cv2.drawContours(canvas, entry["contours"], -1, color, 1)
+        cv2.putText(canvas, f"Oyster {oyster_id}", (10, 28 + idx * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+    shown = 0
+    out_of_bounds = 0
+    for info in skipped_points[:max(1, int(max_points))]:
+        x, y = int(info["scaled_x"]), int(info["scaled_y"])
+        if 0 <= x < w and 0 <= y < h:
+            cv2.circle(canvas, (x, y), 2, (0, 0, 255), -1)
+            shown += 1
+        else:
+            out_of_bounds += 1
+
+    cv2.putText(
+        canvas,
+        f"Skipped points shown: {shown} / {len(skipped_points)} (oob skipped: {out_of_bounds})",
+        (10, h - 16),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (255, 255, 255),
+        1
     )
-    return None
+    out_path = output_dir / f"{slide_stem}_skipped_assignment_overlay.png"
+    cv2.imwrite(str(out_path), canvas)
+    logger.info(f"Saved skipped-annotation debug overlay: {out_path}")
+
+
+def get_oyster_id_for_annotation(
+    annotation,
+    assignment_context: dict,
+    scale_x: float,
+    scale_y: float,
+    nearest_oyster_max_distance_px: float
+):
+    """
+    Determines which oyster an annotation belongs to using robust assignment rules.
+    """
+    geom = shape(annotation["geometry"])
+    centroid = geom.centroid
+
+    scaled_centroid_x = int(centroid.x / max(scale_x, 1e-9))
+    scaled_centroid_y = int(centroid.y / max(scale_y, 1e-9))
+    oyster_id, mode, signed_distance = _assign_from_scaled_point(
+        scaled_centroid_x,
+        scaled_centroid_y,
+        assignment_context,
+        nearest_oyster_max_distance_px
+    )
+    return oyster_id, {
+        "centroid_x": float(centroid.x),
+        "centroid_y": float(centroid.y),
+        "scaled_x": int(scaled_centroid_x),
+        "scaled_y": int(scaled_centroid_y),
+        "assignment_mode": mode,
+        "best_signed_distance": float(signed_distance),
+    }
 
 
 def split_slides(all_slides, config, logger):
@@ -394,10 +529,33 @@ def process_single_wsi(
                 )
                 return
 
-            # Calculate the downsample factor
+            # Calculate coordinate-space scaling factors between Level-0 WSI and mask.
             mask_height, mask_width = next(iter(parent_masks.values())).shape
-            downsample_factor = img_width / mask_width
-            logger.info(f"Calculated downsample factor: {downsample_factor:.2f}x")
+            scale_x = img_width / mask_width
+            scale_y = img_height / mask_height
+            logger.info(
+                f"Coordinate scaling: scale_x={scale_x:.4f}, scale_y={scale_y:.4f} "
+                f"(WSI={img_width}x{img_height}, mask={mask_width}x{mask_height})"
+            )
+            anisotropy = abs(scale_x - scale_y) / max(scale_x, scale_y, 1e-9)
+            if anisotropy > 0.05:
+                logger.warning(
+                    f"Significant scale anisotropy detected ({anisotropy * 100:.2f}%). "
+                    "This may indicate coordinate-space mismatch."
+                )
+
+            assignment_cfg = config["dataset_creation"].get("annotation_assignment", {})
+            boundary_tolerance_px = int(assignment_cfg.get("boundary_tolerance_px", 3))
+            nearest_oyster_max_distance_px = float(assignment_cfg.get("nearest_oyster_max_distance_px", 8.0))
+            log_each_unassigned = bool(assignment_cfg.get("log_each_unassigned", False))
+            save_skipped_overlay = bool(assignment_cfg.get("save_skipped_overlay", True))
+            max_overlay_points = int(assignment_cfg.get("max_overlay_points", 3000))
+
+            assignment_context = _create_assignment_context(parent_masks, boundary_tolerance_px)
+            logger.info(
+                f"Assignment settings: boundary_tolerance_px={boundary_tolerance_px}, "
+                f"nearest_oyster_max_distance_px={nearest_oyster_max_distance_px}"
+            )
 
             # Load GeoJSON data
             with open(geojson_path) as f:
@@ -410,6 +568,14 @@ def process_single_wsi(
             yolo_base_path = Path(config["paths"]["yolo_dataset"])
             patches_created = 0
             extracted_records = []
+            skipped_points = []
+            assignment_counts = {
+                "direct": 0,
+                "boundary_tolerant": 0,
+                "nearest_fallback": 0,
+                "unassigned": 0,
+                "unmapped_class": 0,
+            }
 
             for ann_idx, ann in enumerate(tqdm(annotations, desc=f"Processing {wsi_path.stem}")):
                 try:
@@ -418,6 +584,7 @@ def process_single_wsi(
                     )
                     class_id = _resolve_class_id(ann_class_name, class_map, class_aliases)
                     if class_id is None:
+                        assignment_counts["unmapped_class"] += 1
                         if not hasattr(process_single_wsi, "warned_classes"):
                             process_single_wsi.warned_classes = set()
                         if ann_class_name not in process_single_wsi.warned_classes:
@@ -426,12 +593,29 @@ def process_single_wsi(
                             process_single_wsi.warned_classes.add(ann_class_name)
                         continue
 
-                    oyster_id = get_oyster_id_for_annotation(
-                        ann, parent_masks, downsample_factor, logger
+                    oyster_id, assignment_debug = get_oyster_id_for_annotation(
+                        ann,
+                        assignment_context,
+                        scale_x=scale_x,
+                        scale_y=scale_y,
+                        nearest_oyster_max_distance_px=nearest_oyster_max_distance_px
                     )
                     if oyster_id is None:
-                        logger.debug(f"Annotation '{ann_class_name}' did not fall within any oyster mask. Skipping.")
+                        assignment_counts["unassigned"] += 1
+                        skipped_points.append(assignment_debug)
+                        if log_each_unassigned:
+                            logger.warning(
+                                "Annotation at "
+                                f"({assignment_debug['centroid_x']:.2f}, {assignment_debug['centroid_y']:.2f}) "
+                                f"scaled=({assignment_debug['scaled_x']}, {assignment_debug['scaled_y']}) "
+                                f"did not fall within any oyster mask "
+                                f"(mode={assignment_debug['assignment_mode']}, "
+                                f"best_signed_distance={assignment_debug['best_signed_distance']:.2f}). Skipping."
+                            )
                         continue
+                    assignment_mode = assignment_debug["assignment_mode"]
+                    if assignment_mode in assignment_counts:
+                        assignment_counts[assignment_mode] += 1
 
                     geom = shape(ann["geometry"])
                     g_x_min, g_y_min, g_x_max, g_y_max = geom.bounds
@@ -499,6 +683,25 @@ def process_single_wsi(
                         exc_info=True,
                     )
                     continue
+
+            logger.info(
+                "Assignment summary for "
+                f"{wsi_path.stem}: direct={assignment_counts['direct']}, "
+                f"boundary_tolerant={assignment_counts['boundary_tolerant']}, "
+                f"nearest_fallback={assignment_counts['nearest_fallback']}, "
+                f"unassigned={assignment_counts['unassigned']}, "
+                f"unmapped_class={assignment_counts['unmapped_class']}, "
+                f"patches_created={patches_created}"
+            )
+            if save_skipped_overlay and skipped_points:
+                _save_skipped_annotations_overlay(
+                    slide_stem=wsi_path.stem,
+                    assignment_context=assignment_context,
+                    skipped_points=skipped_points,
+                    output_dir=Path(config["paths"]["logs"]) / "dataset_assignment_debug",
+                    max_points=max_overlay_points,
+                    logger=logger
+                )
             return extracted_records
     except Exception as e:
         logger.error(
