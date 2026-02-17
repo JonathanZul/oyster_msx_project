@@ -28,6 +28,14 @@ def _normalize_class_name(name: str | None) -> str:
     return " ".join(str(name).strip().lower().split())
 
 
+def _normalize_slide_stem(stem: str | None) -> str:
+    """Normalizes slide stems so '.ome' suffix is treated consistently."""
+    if not stem:
+        return ""
+    s = str(stem).strip()
+    return s[:-4] if s.endswith(".ome") else s
+
+
 def _resolve_class_id(
     ann_class_name: str | None,
     class_map: dict,
@@ -260,20 +268,21 @@ def split_slides(all_slides, config, logger):
     Returns:
         dict: Mapping of slide_name -> subset ('train', 'val', 'test')
     """
-    train_slides_config = set(config['dataset_creation'].get('train_slides', []))
-    val_slides_config = set(config['dataset_creation'].get('validation_slides', []))
-    test_slides_config = set(config['dataset_creation'].get('test_slides', []))
+    train_slides_config = {_normalize_slide_stem(s) for s in config['dataset_creation'].get('train_slides', [])}
+    val_slides_config = {_normalize_slide_stem(s) for s in config['dataset_creation'].get('validation_slides', [])}
+    test_slides_config = {_normalize_slide_stem(s) for s in config['dataset_creation'].get('test_slides', [])}
 
     slide_assignments = {}
     remaining_slides = []
 
     # 1. Assign explicitly defined slides (train takes priority over val/test)
     for slide in all_slides:
-        if slide in train_slides_config:
+        slide_key = _normalize_slide_stem(slide)
+        if slide_key in train_slides_config:
             slide_assignments[slide] = 'train'
-        elif slide in val_slides_config:
+        elif slide_key in val_slides_config:
             slide_assignments[slide] = 'val'
-        elif slide in test_slides_config:
+        elif slide_key in test_slides_config:
             slide_assignments[slide] = 'test'
         else:
             remaining_slides.append(slide)
@@ -309,9 +318,10 @@ def split_slides(all_slides, config, logger):
             logger.info(f"Explicit Split: {len(remaining_slides)} remaining slides assigned to Train.")
 
     # Log explicit assignments
-    n_explicit_train = len(train_slides_config & set(all_slides))
-    n_explicit_val = len(val_slides_config & set(all_slides))
-    n_explicit_test = len(test_slides_config & set(all_slides))
+    all_slide_keys = {_normalize_slide_stem(s) for s in all_slides}
+    n_explicit_train = len(train_slides_config & all_slide_keys)
+    n_explicit_val = len(val_slides_config & all_slide_keys)
+    n_explicit_test = len(test_slides_config & all_slide_keys)
     if n_explicit_train or n_explicit_val or n_explicit_test:
         logger.info(f"Explicit Assignments: {n_explicit_train} Train, {n_explicit_val} Val, {n_explicit_test} Test")
 
@@ -326,13 +336,13 @@ def filter_geojson_files_by_allowed_slides(geojson_files, config, logger):
     if not allowed_slides:
         return geojson_files
 
-    allowed_set = {str(s).strip() for s in allowed_slides if str(s).strip()}
+    allowed_set = {_normalize_slide_stem(s) for s in allowed_slides if str(s).strip()}
     if not allowed_set:
         logger.warning("dataset_creation.allowed_slides was provided but empty after normalization. Using all slides.")
         return geojson_files
 
-    filtered = [p for p in geojson_files if p.stem in allowed_set]
-    excluded = [p.stem for p in geojson_files if p.stem not in allowed_set]
+    filtered = [p for p in geojson_files if _normalize_slide_stem(p.stem) in allowed_set]
+    excluded = [p.stem for p in geojson_files if _normalize_slide_stem(p.stem) not in allowed_set]
 
     logger.info(
         f"Allowed-slides filter active: keeping {len(filtered)}/{len(geojson_files)} slides."
@@ -340,7 +350,7 @@ def filter_geojson_files_by_allowed_slides(geojson_files, config, logger):
     if excluded:
         logger.info(f"Excluded {len(excluded)} slides not in allowed_slides list.")
 
-    missing_from_data = sorted(list(allowed_set - {p.stem for p in geojson_files}))
+    missing_from_data = sorted(list(allowed_set - {_normalize_slide_stem(p.stem) for p in geojson_files}))
     if missing_from_data:
         logger.warning(
             f"{len(missing_from_data)} allowed slides were not found in qupath exports: {missing_from_data[:10]}"
@@ -541,13 +551,14 @@ def main():
 
     for geojson_path in geojson_files:
         wsi_name_stem = geojson_path.stem
-        
-        subset = slide_assignments.get(wsi_name_stem, 'train') # Default to train if something goes wrong
+        wsi_name_key = _normalize_slide_stem(wsi_name_stem)
+
+        subset = slide_assignments.get(wsi_name_stem, slide_assignments.get(wsi_name_key, 'train')) # Default to train if something goes wrong
 
         # Find matching WSI file
-        possible_wsi_paths = list(
-            Path(config["paths"]["raw_wsis"]).glob(f"{wsi_name_stem}.*")
-        )
+        possible_wsi_paths = list(Path(config["paths"]["raw_wsis"]).glob(f"{wsi_name_stem}.*"))
+        if not possible_wsi_paths:
+            possible_wsi_paths = list(Path(config["paths"]["raw_wsis"]).glob(f"{wsi_name_key}.*"))
         wsi_path = next(
             (
                 p
@@ -558,12 +569,12 @@ def main():
         )
         if not wsi_path:
             logger.warning(
-                f"Could not find a matching WSI for '{geojson_path.name}'. Skipping."
+                f"Could not find a matching WSI for '{geojson_path.name}' (normalized stem: '{wsi_name_key}'). Skipping."
             )
             continue
 
         # Find matching oyster masks for this slide
-        mask_dir = Path(config["paths"]["oyster_masks"]) / wsi_name_stem
+        mask_dir = Path(config["paths"]["oyster_masks"]) / wsi_name_key
         if not mask_dir.exists():
             logger.warning(
                 f"No mask directory found for '{wsi_name_stem}' at '{mask_dir}'. Skipping."
