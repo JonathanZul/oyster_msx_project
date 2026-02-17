@@ -215,9 +215,11 @@ def setup_directories(base_path: Path, append_mode: bool, logger):
     (base_path / "images/train").mkdir(parents=True, exist_ok=True)
     (base_path / "images/val").mkdir(parents=True, exist_ok=True)
     (base_path / "images/test").mkdir(parents=True, exist_ok=True)
+    (base_path / "images/all").mkdir(parents=True, exist_ok=True)
     (base_path / "labels/train").mkdir(parents=True, exist_ok=True)
     (base_path / "labels/val").mkdir(parents=True, exist_ok=True)
     (base_path / "labels/test").mkdir(parents=True, exist_ok=True)
+    (base_path / "labels/all").mkdir(parents=True, exist_ok=True)
 
 
 def get_oyster_id_for_annotation(annotation, parent_masks, downsample_factor, logger):
@@ -360,7 +362,7 @@ def filter_geojson_files_by_allowed_slides(geojson_files, config, logger):
 
 
 def process_single_wsi(
-    wsi_path: Path, geojson_path: Path, parent_mask_paths: list, subset: str, config: dict, logger
+    wsi_path: Path, geojson_path: Path, parent_mask_paths: list, config: dict, logger
 ):
     """
     Processes a single WSI and its annotations to generate oyster-aware patches.
@@ -407,8 +409,9 @@ def process_single_wsi(
             class_aliases = config["dataset_creation"].get("class_aliases", {})
             yolo_base_path = Path(config["paths"]["yolo_dataset"])
             patches_created = 0
+            extracted_records = []
 
-            for ann in tqdm(annotations, desc=f"Processing {wsi_path.stem}"):
+            for ann_idx, ann in enumerate(tqdm(annotations, desc=f"Processing {wsi_path.stem}")):
                 try:
                     ann_class_name = (
                         ann["properties"].get("classification", {}).get("name")
@@ -463,18 +466,12 @@ def process_single_wsi(
                     elif image_patch.ndim == 2:
                         image_patch = cv2.cvtColor(image_patch, cv2.COLOR_GRAY2BGR)
 
-                    # Apply patch-level val split if configured and this is a training slide
-                    patch_subset = subset  # Local copy for this patch
-                    patch_val_split = config["dataset_creation"].get("patch_level_val_split", 0)
-                    if patch_subset == "train" and patch_val_split > 0:
-                        if random.random() < patch_val_split:
-                            patch_subset = "val"
-
-                    # --- NEW: Create a more descriptive filename ---
-                    patch_filename = f"{wsi_path.stem}_oyster_{oyster_id}_patch_x{p_x_min}_y{p_y_min}"
+                    # Patch-first workflow: write all annotations into a staging pool,
+                    # then perform a dataset split from extracted patches.
+                    patch_filename = f"{wsi_path.stem}_oyster_{oyster_id}_patch_x{p_x_min}_y{p_y_min}_ann{ann_idx}"
 
                     cv2.imwrite(
-                        str(yolo_base_path / f"images/{patch_subset}/{patch_filename}.png"),
+                        str(yolo_base_path / f"images/all/{patch_filename}.png"),
                         image_patch,
                     )
 
@@ -486,23 +483,93 @@ def process_single_wsi(
                     yolo_height = (l_y_max - l_y_min) / patch_size
 
                     label_path = (
-                        yolo_base_path / f"labels/{patch_subset}/{patch_filename}.txt"
+                        yolo_base_path / f"labels/all/{patch_filename}.txt"
                     )
                     with open(label_path, "w") as f_label:
                         f_label.write(
                             f"{class_id} {yolo_center_x} {yolo_center_y} {yolo_width} {yolo_height}\n"
                         )
+                    extracted_records.append({
+                        "filename": patch_filename,
+                        "class_id": int(class_id),
+                    })
                 except Exception as e:
                     logger.error(
                         f"Failed to process a single annotation. Error: {e}",
                         exc_info=True,
                     )
                     continue
+            return extracted_records
     except Exception as e:
         logger.error(
             f"An unexpected error occurred while processing {wsi_path.name}: {e}",
             exc_info=True,
         )
+    return []
+
+
+def split_extracted_patches(yolo_dataset_path: Path, extracted_records: list[dict], config: dict, logger):
+    """
+    Splits extracted annotation patches into train/val/test at patch level.
+    Uses per-class stratified splitting so each subset receives samples of each class.
+    """
+    if not extracted_records:
+        logger.warning("No extracted records available for splitting.")
+        return
+
+    ratios = config["dataset_creation"].get("train_val_test_split", [0.7, 0.15, 0.15])
+    if len(ratios) != 3:
+        logger.warning("Invalid train_val_test_split (expected 3 values). Falling back to [0.7, 0.15, 0.15].")
+        ratios = [0.7, 0.15, 0.15]
+    ratio_sum = sum(ratios)
+    if ratio_sum <= 0:
+        logger.warning("Invalid train_val_test_split sum <= 0. Falling back to [0.7, 0.15, 0.15].")
+        ratios = [0.7, 0.15, 0.15]
+        ratio_sum = 1.0
+    ratios = [r / ratio_sum for r in ratios]
+
+    random.seed(config.get("cross_validation", {}).get("data_split_seed", 42))
+
+    by_class = {}
+    for rec in extracted_records:
+        by_class.setdefault(rec["class_id"], []).append(rec["filename"])
+
+    assignments = {"train": [], "val": [], "test": []}
+    for class_id, filenames in by_class.items():
+        random.shuffle(filenames)
+        n = len(filenames)
+        n_train = int(n * ratios[0])
+        n_val = int(n * ratios[1])
+        n_test = n - n_train - n_val
+
+        assignments["train"].extend(filenames[:n_train])
+        assignments["val"].extend(filenames[n_train:n_train + n_val])
+        assignments["test"].extend(filenames[n_train + n_val:n_train + n_val + n_test])
+        logger.info(
+            f"Class {class_id}: total={n}, train={n_train}, val={n_val}, test={n_test}"
+        )
+
+    src_img_dir = yolo_dataset_path / "images" / "all"
+    src_lbl_dir = yolo_dataset_path / "labels" / "all"
+
+    for subset, names in assignments.items():
+        dst_img_dir = yolo_dataset_path / "images" / subset
+        dst_lbl_dir = yolo_dataset_path / "labels" / subset
+        for name in names:
+            src_img = src_img_dir / f"{name}.png"
+            src_lbl = src_lbl_dir / f"{name}.txt"
+            dst_img = dst_img_dir / f"{name}.png"
+            dst_lbl = dst_lbl_dir / f"{name}.txt"
+            if src_img.exists() and src_lbl.exists():
+                shutil.move(src_img, dst_img)
+                shutil.move(src_lbl, dst_lbl)
+
+    shutil.rmtree(src_img_dir, ignore_errors=True)
+    shutil.rmtree(src_lbl_dir, ignore_errors=True)
+    logger.info(
+        f"Patch-level split complete: train={len(assignments['train'])}, "
+        f"val={len(assignments['val'])}, test={len(assignments['test'])}"
+    )
 
 
 def main():
@@ -540,20 +607,12 @@ def main():
 
     logger.info(f"Found {len(geojson_files)} GeoJSON files to process.")
     
-    # --- NEW: Determine Slide Splits ---
-    all_slide_names = [p.stem for p in geojson_files]
-    slide_assignments = split_slides(all_slide_names, config, logger)
-    
-    logger.info("Slide Assignments:")
-    for s, assignment in slide_assignments.items():
-        logger.info(f"  {s}: {assignment}")
-    # -----------------------------------
+    logger.info("Dataset split mode: patch-level (stratified by class).")
+    extracted_records = []
 
     for geojson_path in geojson_files:
         wsi_name_stem = geojson_path.stem
         wsi_name_key = _normalize_slide_stem(wsi_name_stem)
-
-        subset = slide_assignments.get(wsi_name_stem, slide_assignments.get(wsi_name_key, 'train')) # Default to train if something goes wrong
 
         # Find matching WSI file
         possible_wsi_paths = list(Path(config["paths"]["raw_wsis"]).glob(f"{wsi_name_stem}.*"))
@@ -587,7 +646,11 @@ def main():
             continue
 
         logger.info(f"Found {len(parent_mask_paths)} oyster masks for this slide.")
-        process_single_wsi(wsi_path, geojson_path, parent_mask_paths, subset, config, logger)
+        extracted_records.extend(
+            process_single_wsi(wsi_path, geojson_path, parent_mask_paths, config, logger)
+        )
+
+    split_extracted_patches(yolo_dataset_path, extracted_records, config, logger)
 
     class_map = config["dataset_creation"]["classes"]
     _log_subset_distribution(yolo_dataset_path, "train", class_map, logger, prefix="Before balancing - ")
