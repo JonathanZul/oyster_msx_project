@@ -6,6 +6,7 @@ import glob
 import json
 import random
 import shutil
+import math
 from pathlib import Path
 
 import cv2
@@ -55,6 +56,139 @@ def _resolve_class_id(
         return alias_target
 
     return class_map.get(alias_target, normalized_to_id.get(_normalize_class_name(alias_target)))
+
+
+def _read_single_class_id_from_label(label_path: Path):
+    """
+    Reads a class ID from a YOLO label file.
+    Returns None for empty/invalid/multi-class label files.
+    """
+    try:
+        lines = [ln.strip() for ln in label_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    except Exception:
+        return None
+    if not lines:
+        return None
+
+    class_ids = set()
+    for line in lines:
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            class_ids.add(int(float(parts[0])))
+        except ValueError:
+            return None
+
+    if len(class_ids) != 1:
+        return None
+    return next(iter(class_ids))
+
+
+def _collect_subset_class_files(yolo_dataset_path: Path, subset: str):
+    """
+    Builds a mapping {class_id: [label_path,...]} for a dataset subset.
+    """
+    label_dir = yolo_dataset_path / "labels" / subset
+    class_to_files = {}
+    if not label_dir.exists():
+        return class_to_files
+
+    for label_path in label_dir.glob("*.txt"):
+        class_id = _read_single_class_id_from_label(label_path)
+        if class_id is None:
+            continue
+        class_to_files.setdefault(class_id, []).append(label_path)
+    return class_to_files
+
+
+def _log_subset_distribution(yolo_dataset_path: Path, subset: str, class_map: dict, logger, prefix: str = ""):
+    class_to_files = _collect_subset_class_files(yolo_dataset_path, subset)
+    class_names = {v: k for k, v in class_map.items()}
+    if not class_to_files:
+        logger.info(f"{prefix}{subset}: no labeled samples found.")
+        return
+
+    summary = ", ".join(
+        f"{class_names.get(class_id, class_id)}={len(paths)}"
+        for class_id, paths in sorted(class_to_files.items(), key=lambda x: x[0])
+    )
+    logger.info(f"{prefix}{subset} class distribution: {summary}")
+
+
+def balance_training_subset(yolo_dataset_path: Path, config: dict, logger):
+    """
+    Rebalances only the training subset via minority oversampling.
+
+    Expected config:
+      dataset_creation:
+        class_balance:
+          enabled: true
+          target_max_ratio: 2.0
+          max_oversample_multiplier: 4.0
+    """
+    balance_cfg = config.get("dataset_creation", {}).get("class_balance", {})
+    if not balance_cfg.get("enabled", False):
+        logger.info("Class balancing disabled for training subset.")
+        return
+
+    target_max_ratio = float(balance_cfg.get("target_max_ratio", 2.0))
+    max_oversample_multiplier = float(balance_cfg.get("max_oversample_multiplier", 4.0))
+    if target_max_ratio < 1.0:
+        logger.warning("Invalid class_balance.target_max_ratio (<1). Using 1.0.")
+        target_max_ratio = 1.0
+    if max_oversample_multiplier < 1.0:
+        logger.warning("Invalid class_balance.max_oversample_multiplier (<1). Using 1.0.")
+        max_oversample_multiplier = 1.0
+
+    class_map = config["dataset_creation"]["classes"]
+    class_names = {v: k for k, v in class_map.items()}
+    class_to_files = _collect_subset_class_files(yolo_dataset_path, "train")
+    if len(class_to_files) < 2:
+        logger.info("Class balancing skipped: need at least 2 classes present in train subset.")
+        return
+
+    counts = {class_id: len(paths) for class_id, paths in class_to_files.items()}
+    majority_class = max(counts, key=counts.get)
+    majority_count = counts[majority_class]
+    logger.info(
+        f"Balancing train subset. Majority class '{class_names.get(majority_class, majority_class)}' has {majority_count} samples."
+    )
+
+    train_images_dir = yolo_dataset_path / "images" / "train"
+    train_labels_dir = yolo_dataset_path / "labels" / "train"
+    added_total = 0
+
+    for class_id, files in class_to_files.items():
+        current_count = len(files)
+        desired_count = int(math.ceil(majority_count / target_max_ratio))
+        target_count = min(
+            max(current_count, desired_count),
+            int(math.ceil(current_count * max_oversample_multiplier))
+        )
+        to_add = target_count - current_count
+        if to_add <= 0:
+            continue
+
+        logger.info(
+            f"Oversampling class '{class_names.get(class_id, class_id)}': "
+            f"{current_count} -> {target_count} (adding {to_add})"
+        )
+
+        for dup_idx in range(to_add):
+            src_label = files[dup_idx % current_count]
+            src_image = train_images_dir / f"{src_label.stem}.png"
+            if not src_image.exists():
+                continue
+
+            new_stem = f"{src_label.stem}_bal{dup_idx+1}"
+            dst_label = train_labels_dir / f"{new_stem}.txt"
+            dst_image = train_images_dir / f"{new_stem}.png"
+            shutil.copy2(src_label, dst_label)
+            shutil.copy2(src_image, dst_image)
+            added_total += 1
+
+    logger.info(f"Class balancing complete. Added {added_total} oversampled train patches.")
 
 
 def setup_directories(base_path: Path, append_mode: bool, logger):
@@ -408,6 +542,14 @@ def main():
         logger.info(f"Found {len(parent_mask_paths)} oyster masks for this slide.")
         process_single_wsi(wsi_path, geojson_path, parent_mask_paths, subset, config, logger)
 
+    class_map = config["dataset_creation"]["classes"]
+    _log_subset_distribution(yolo_dataset_path, "train", class_map, logger, prefix="Before balancing - ")
+    _log_subset_distribution(yolo_dataset_path, "val", class_map, logger, prefix="Before balancing - ")
+    _log_subset_distribution(yolo_dataset_path, "test", class_map, logger, prefix="Before balancing - ")
+
+    balance_training_subset(yolo_dataset_path, config, logger)
+
+    _log_subset_distribution(yolo_dataset_path, "train", class_map, logger, prefix="After balancing - ")
     logger.info("--- Dataset Creation Script Finished ---")
 
 

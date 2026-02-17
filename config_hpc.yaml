@@ -80,6 +80,10 @@ dataset_creation:
     "Plasmodia": 1
   class_aliases:
     "MSX Plasmodia": "Plasmodia"
+  class_balance:
+    enabled: true
+    target_max_ratio: 2.0
+    max_oversample_multiplier: 4.0
 
 # 4. Training Parameters (YOLO)
 # Parameters controlling the `02_train_yolo.py` script.
