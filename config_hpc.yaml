@@ -75,7 +75,17 @@ dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
   train_val_test_split: [0.70, 0.15, 0.15] # Train/Val/Test ratios for random split
   patch_level_val_split: 0.15 # Fraction of training patches to use for validation (fallback)
-  allowed_slides: [] # Optional whitelist of slide stems to use for dataset creation.
+  allowed_slides: [
+    "U5014-25 A_01",
+    "U5014-25 B_01",
+    "U5014-25 C_01",
+    "U5014-25 D_01",
+    "U5014-25 E_01",
+    "U5014-25 F_01",
+    "U5014-25 G_01",
+    "U5014-25 H_01",
+    "U5014-25 I_01",
+  ] # Optional whitelist of slide stems to use for dataset creation.
   classes:
     "Distractor": 0
     "Plasmodia": 1
@@ -96,8 +106,8 @@ training:
   batch_size: 16
   device: "cuda:0" # HPC uses CUDA
   img_size: 640
-  workers: 12
-  cache: true
+  workers: 6
+  cache: false
   amp: true
   extra_train_args:
     deterministic: false

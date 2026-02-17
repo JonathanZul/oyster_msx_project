@@ -3,7 +3,7 @@
 #SBATCH --account=def-agodbout
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=16000M
+#SBATCH --mem=32000M
 #SBATCH --job-name=oyster-gpu-pipeline
 #SBATCH --output=hpc_outputs/%x-%j_gpu_train_infer.out
 #SBATCH --mail-user=jezulluna@upei.ca
