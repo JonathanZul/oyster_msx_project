@@ -113,6 +113,16 @@ inference:
   max_patch_read_retries: 3
   patch_read_retry_sleep_seconds: 0.15
 
+# 6. Post-processing Parameters
+# Parameters controlling the `04_format_predictions.py` script.
+# -------------------------------------------------------------------
+post_processing:
+  include_ground_truth_classes:
+    - "Oyster 1 Negative"
+    - "Oyster 2 Negative"
+    - "Oyster 1 Positive"
+    - "Oyster 2 Positive"
+
 # ===================================================================
 #               CROSS-VALIDATION CONFIGURATION (HPC)
 # ===================================================================

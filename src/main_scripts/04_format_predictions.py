@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import copy
 import torch
 import torchvision
 import numpy as np
@@ -11,6 +12,55 @@ from tqdm import tqdm
 # Import utility functions from our project
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
+
+
+DEFAULT_REVIEW_GT_CLASSES = [
+    "Oyster 1 Negative",
+    "Oyster 2 Negative",
+    "Oyster 1 Positive",
+    "Oyster 2 Positive",
+]
+
+
+def load_review_ground_truth_features(slide_stem: str, config: dict, logger):
+    """
+    Loads review-oriented ground-truth annotations from the source QuPath export
+    and returns only the configured classes to include in output GeoJSON.
+    """
+    classes_to_include = config.get("post_processing", {}).get(
+        "include_ground_truth_classes",
+        DEFAULT_REVIEW_GT_CLASSES
+    )
+    if not classes_to_include:
+        return []
+
+    normalized_target = {str(name).strip().lower() for name in classes_to_include}
+    source_geojson = Path(config["paths"]["qupath_exports"]) / f"{slide_stem}.geojson"
+    if not source_geojson.exists():
+        logger.warning(f"No source annotation file found for review GT merge: {source_geojson}")
+        return []
+
+    try:
+        with open(source_geojson, "r", encoding="utf-8") as f:
+            source_data = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load source annotation file '{source_geojson}': {e}")
+        return []
+
+    selected_features = []
+    for feature in source_data.get("features", []):
+        class_name = (
+            feature.get("properties", {})
+            .get("classification", {})
+            .get("name", "")
+        )
+        if str(class_name).strip().lower() in normalized_target:
+            # Keep source annotation as-is so QuPath renders your original review labels.
+            selected_features.append(copy.deepcopy(feature))
+
+    if selected_features:
+        logger.info(f"Merged {len(selected_features)} review GT annotations from {source_geojson.name}")
+    return selected_features
 
 
 def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger):
@@ -74,35 +124,37 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
                     all_scores.append(conf)
                     all_class_ids.append(int(class_id))
 
+    clean_boxes = []
+    clean_scores = []
+    clean_class_ids = []
     if not all_boxes:
-        logger.warning("No valid detections found across all patches. Skipping GeoJSON creation.")
-        return
+        logger.warning("No valid detections found across all patches. Exporting only merged review GT annotations (if any).")
+    else:
+        logger.info(f"Loaded a total of {len(all_boxes)} raw detections.")
 
-    logger.info(f"Loaded a total of {len(all_boxes)} raw detections.")
+        # 2. Perform Non-Maximum Suppression (NMS) to merge overlapping boxes
+        logger.info("Performing Non-Maximum Suppression (NMS) to merge overlapping detections...")
+        boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
+        scores_tensor = torch.tensor(all_scores, dtype=torch.float32)
 
-    # 2. Perform Non-Maximum Suppression (NMS) to merge overlapping boxes
-    logger.info("Performing Non-Maximum Suppression (NMS) to merge overlapping detections...")
-    boxes_tensor = torch.tensor(all_boxes, dtype=torch.float32)
-    scores_tensor = torch.tensor(all_scores, dtype=torch.float32)
+        # Use batched NMS for a single vectorized pass while still isolating classes.
+        class_ids_array = np.array(all_class_ids)
+        class_ids_tensor = torch.tensor(class_ids_array, dtype=torch.int64)
+        kept_indices = torchvision.ops.batched_nms(
+            boxes_tensor,
+            scores_tensor,
+            class_ids_tensor,
+            iou_threshold=0.4
+        ).cpu().numpy().tolist()
 
-    # Use batched NMS for a single vectorized pass while still isolating classes.
-    class_ids_array = np.array(all_class_ids)
-    class_ids_tensor = torch.tensor(class_ids_array, dtype=torch.int64)
-    kept_indices = torchvision.ops.batched_nms(
-        boxes_tensor,
-        scores_tensor,
-        class_ids_tensor,
-        iou_threshold=0.4
-    ).cpu().numpy().tolist()
+        # Keep deterministic ordering by descending score.
+        kept_indices = sorted(kept_indices, key=lambda i: all_scores[i], reverse=True)
 
-    # Keep deterministic ordering by descending score.
-    kept_indices = sorted(kept_indices, key=lambda i: all_scores[i], reverse=True)
+        clean_boxes = boxes_tensor[kept_indices].tolist()
+        clean_scores = scores_tensor[kept_indices].tolist()
+        clean_class_ids = class_ids_array[kept_indices].tolist()
 
-    clean_boxes = boxes_tensor[kept_indices].tolist()
-    clean_scores = scores_tensor[kept_indices].tolist()
-    clean_class_ids = class_ids_array[kept_indices].tolist()
-
-    logger.info(f"NMS reduced the number of detections from {len(all_boxes)} to {len(clean_boxes)}.")
+        logger.info(f"NMS reduced the number of detections from {len(all_boxes)} to {len(clean_boxes)}.")
 
     # 1. Create a list of GeoJSON Features that match the QuPath format
     geojson_features = []
@@ -139,6 +191,10 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
             }
         }
         geojson_features.append(feature)
+
+    # 1b. Merge review GT annotations from source QuPath exports.
+    review_gt_features = load_review_ground_truth_features(slide_pred_dir.name, config, logger)
+    geojson_features.extend(review_gt_features)
 
     # 2. Create the final FeatureCollection object
     qupath_geojson_output = {
