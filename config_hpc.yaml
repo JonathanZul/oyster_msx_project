@@ -75,6 +75,7 @@ dataset_creation:
   patch_size: 640 # The size of square patches (in pixels) to create.
   train_val_test_split: [0.70, 0.15, 0.15] # Train/Val/Test ratios for random split
   patch_level_val_split: 0.15 # Fraction of training patches to use for validation (fallback)
+  allowed_slides: [] # Optional whitelist of slide stems to use for dataset creation.
   classes:
     "Distractor": 0
     "Plasmodia": 1

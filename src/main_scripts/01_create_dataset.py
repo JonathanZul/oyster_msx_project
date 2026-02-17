@@ -318,6 +318,37 @@ def split_slides(all_slides, config, logger):
     return slide_assignments
 
 
+def filter_geojson_files_by_allowed_slides(geojson_files, config, logger):
+    """
+    Optionally restrict dataset creation to an explicit whitelist of slide stems.
+    """
+    allowed_slides = config["dataset_creation"].get("allowed_slides", [])
+    if not allowed_slides:
+        return geojson_files
+
+    allowed_set = {str(s).strip() for s in allowed_slides if str(s).strip()}
+    if not allowed_set:
+        logger.warning("dataset_creation.allowed_slides was provided but empty after normalization. Using all slides.")
+        return geojson_files
+
+    filtered = [p for p in geojson_files if p.stem in allowed_set]
+    excluded = [p.stem for p in geojson_files if p.stem not in allowed_set]
+
+    logger.info(
+        f"Allowed-slides filter active: keeping {len(filtered)}/{len(geojson_files)} slides."
+    )
+    if excluded:
+        logger.info(f"Excluded {len(excluded)} slides not in allowed_slides list.")
+
+    missing_from_data = sorted(list(allowed_set - {p.stem for p in geojson_files}))
+    if missing_from_data:
+        logger.warning(
+            f"{len(missing_from_data)} allowed slides were not found in qupath exports: {missing_from_data[:10]}"
+        )
+
+    return filtered
+
+
 def process_single_wsi(
     wsi_path: Path, geojson_path: Path, parent_mask_paths: list, subset: str, config: dict, logger
 ):
@@ -490,6 +521,11 @@ def main():
     geojson_files = list(qupath_exports_dir.glob("*.geojson"))
     if not geojson_files:
         logger.error(f"No GeoJSON files found in '{qupath_exports_dir}'. Exiting.")
+        return
+
+    geojson_files = filter_geojson_files_by_allowed_slides(geojson_files, config, logger)
+    if not geojson_files:
+        logger.error("No GeoJSON files remain after applying allowed_slides filter. Exiting.")
         return
 
     logger.info(f"Found {len(geojson_files)} GeoJSON files to process.")
