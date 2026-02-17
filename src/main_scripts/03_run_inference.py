@@ -14,6 +14,18 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
+def find_latest_best_model(model_dir: Path):
+    """
+    Finds the most recently modified best.pt under the model output directory.
+    """
+    if not model_dir.exists():
+        return None
+    candidates = list(model_dir.rglob("best.pt"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def collect_target_slides(config: dict, include_annotated: bool = False):
     """
     Collects raw WSIs and returns the subset targeted for inference.
@@ -473,29 +485,26 @@ def main():
             logger.info("No unannotated WSIs found to process. All slides appear to have a corresponding GeoJSON file.")
         return
 
-    # 1. Load the trained YOLO model
-    model_path = Path(config['inference']['model_checkpoint'])
-    if not model_path.exists():
-        # Let's try to find the 'best.pt' in the latest run directory
-        model_dir = Path(config['paths']['model_output_dir'])
-        run_dirs = sorted([d for d in model_dir.iterdir() if d.is_dir()])
-        if run_dirs:
-            latest_run = run_dirs[-1]
-            potential_model_path = latest_run / 'weights' / 'best.pt'
-            if potential_model_path.exists():
-                model_path = potential_model_path
-                logger.warning(f"Model checkpoint in config not found. Using latest found model: {model_path}")
-            else:
-                logger.critical(f"No trained model found at '{model_path}' or in the latest run directory. Aborting.")
-                return
+    # 1. Load the latest trained YOLO model from model_output_dir
+    model_dir = Path(config['paths']['model_output_dir'])
+    latest_model_path = find_latest_best_model(model_dir)
+    if latest_model_path is None:
+        configured_model_path = Path(config['inference']['model_checkpoint'])
+        if configured_model_path.exists():
+            latest_model_path = configured_model_path
+            logger.warning(
+                f"No best.pt found under model_output_dir. Falling back to configured checkpoint: {latest_model_path}"
+            )
         else:
-            logger.critical(f"No trained model found at '{model_path}' and no training runs found. Aborting.")
+            logger.critical(
+                f"No trained model found under '{model_dir}' and configured checkpoint does not exist: {configured_model_path}"
+            )
             return
 
     try:
         from ultralytics import YOLO
-        logger.info(f"Loading trained model from: {model_path}")
-        model = YOLO(model_path)
+        logger.info(f"Loading latest trained model from: {latest_model_path}")
+        model = YOLO(latest_model_path)
     except Exception as e:
         logger.critical(f"Failed to load YOLO model. Error: {e}", exc_info=True)
         return
