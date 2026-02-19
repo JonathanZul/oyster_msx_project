@@ -1,11 +1,30 @@
 import os
 import argparse
 import yaml
+import json
 from pathlib import Path
 from ultralytics import YOLO
 
 from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
+
+
+def get_config_class_names(config: dict):
+    """Returns class names ordered by configured class index."""
+    classes = config['dataset_creation']['classes']
+    return [name for name, idx in sorted(classes.items(), key=lambda item: item[1])]
+
+
+def get_training_namespace(config: dict, class_names: list[str]) -> str:
+    """
+    Computes the training run namespace for model isolation.
+    """
+    ns = str(config.get("training", {}).get("run_namespace", "")).strip()
+    if ns:
+        return ns
+    # Deterministic default namespace by active class set.
+    slug = "_".join(c.lower().replace(" ", "_") for c in class_names)
+    return f"classset_{slug}"
 
 
 def create_yolo_dataset_config(config: dict, logger):
@@ -35,8 +54,7 @@ def create_yolo_dataset_config(config: dict, logger):
     val_path = project_root / yolo_dataset_path / 'images' / 'val'
 
     # Extract class names from the config, ensuring they are in the correct order
-    classes = config['dataset_creation']['classes']
-    class_names = [name for name, idx in sorted(classes.items(), key=lambda item: item[1])]
+    class_names = get_config_class_names(config)
 
     dataset_config = {
         'train': str(train_path),
@@ -53,6 +71,22 @@ def create_yolo_dataset_config(config: dict, logger):
     except Exception as e:
         logger.error(f"Failed to create dataset.yaml. Error: {e}", exc_info=True)
         return None
+
+
+def write_run_class_manifest(save_dir: Path, class_names: list[str], dataset_yaml_path: Path, logger):
+    """
+    Writes run metadata used to verify class mapping during inference.
+    """
+    manifest_path = save_dir / "class_names.json"
+    payload = {
+        "class_names": class_names,
+        "dataset_yaml": str(dataset_yaml_path),
+    }
+    try:
+        manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info(f"Wrote class manifest: {manifest_path}")
+    except Exception as e:
+        logger.warning(f"Failed to write class manifest at {manifest_path}: {e}")
 
 
 def find_latest_best_model(model_dir: Path, logger):
@@ -106,6 +140,9 @@ def main():
     if not dataset_yaml_path:
         logger.critical("Could not create dataset config file. Aborting training.")
         return
+    class_names = get_config_class_names(config)
+    run_namespace = get_training_namespace(config, class_names)
+    logger.info(f"Training run namespace: {run_namespace}")
 
     # 2. Initialize the YOLO model
     # This will download the pre-trained weights if they don't exist
@@ -115,7 +152,7 @@ def main():
     
     # Check if we should auto-resume from the latest model
     if train_params.get('use_latest_model', False):
-        model_output_dir = Path(config['paths']['model_output_dir'])
+        model_output_dir = Path(config['paths']['model_output_dir']) / run_namespace
         # Ensure we are looking relative to project root if path is relative
         if not model_output_dir.is_absolute():
             project_root = Path(__file__).resolve().parents[2]
@@ -143,13 +180,14 @@ def main():
         f"Parameters: Epochs={train_params['epochs']}, Batch Size={train_params['batch_size']}, Device='{train_params['device']}'")
 
     model_name = train_params['yolo_model'].split('/')[-1].replace('.pt', '') + '_msx_oyster_run'
+    model_project_dir = Path(config['paths']['model_output_dir']) / run_namespace
     train_kwargs = {
         "data": str(dataset_yaml_path),
         "epochs": train_params['epochs'],
         "batch": train_params['batch_size'],
         "device": train_params['device'],
         "imgsz": train_params['img_size'],
-        "project": config['paths']['model_output_dir'],
+        "project": str(model_project_dir),
         "name": model_name,
         "workers": train_params.get("workers", 8),
         "cache": train_params.get("cache", False),
@@ -163,7 +201,10 @@ def main():
         logger.warning("Ignoring non-dict training.extra_train_args value.")
 
     try:
-        model.train(**train_kwargs)
+        results = model.train(**train_kwargs)
+        save_dir = Path(getattr(results, "save_dir", ""))
+        if save_dir.exists():
+            write_run_class_manifest(save_dir, class_names, dataset_yaml_path, logger)
         logger.info("--- Model Training Script Finished Successfully ---")
 
     except Exception as e:

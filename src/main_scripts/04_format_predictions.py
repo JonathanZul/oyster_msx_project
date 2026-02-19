@@ -63,6 +63,26 @@ def load_review_ground_truth_features(slide_stem: str, config: dict, logger):
     return selected_features
 
 
+def load_class_id_to_name_map(slide_pred_dir: Path, config: dict, logger):
+    """
+    Resolves class-id mapping for formatted GeoJSON.
+    Prefers per-slide inference metadata to avoid config/model mismatch issues.
+    """
+    meta_path = slide_pred_dir / "class_names.json"
+    if meta_path.exists():
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            class_names = payload.get("class_names", [])
+            if isinstance(class_names, list) and all(isinstance(x, str) for x in class_names):
+                logger.info(f"Using class mapping from inference metadata: {meta_path.name}")
+                return {idx: name for idx, name in enumerate(class_names)}
+        except Exception as e:
+            logger.warning(f"Failed to parse {meta_path}: {e}. Falling back to config mapping.")
+
+    logger.warning("Using class mapping from config (no per-slide class_names.json found).")
+    return {v: k for k, v in config['dataset_creation']['classes'].items()}
+
+
 def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger):
     """
     Processes all raw prediction files for a single slide, performs NMS,
@@ -158,7 +178,7 @@ def process_single_slide_predictions(slide_pred_dir: Path, config: dict, logger)
 
     # 1. Create a list of GeoJSON Features that match the QuPath format
     geojson_features = []
-    class_map_rev = {v: k for k, v in config['dataset_creation']['classes'].items()}
+    class_map_rev = load_class_id_to_name_map(slide_pred_dir, config, logger)
 
     for box, score, class_id in zip(clean_boxes, clean_scores, clean_class_ids):
         x1, y1, x2, y2 = box

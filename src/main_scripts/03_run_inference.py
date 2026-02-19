@@ -2,6 +2,7 @@ import os
 import argparse
 import json
 import time
+import yaml
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import tifffile
@@ -14,16 +15,78 @@ from src.utils.file_handling import load_config
 from src.utils.logging_config import setup_logging
 
 
-def find_latest_best_model(model_dir: Path):
+def get_config_class_names(config: dict):
+    classes = config['dataset_creation']['classes']
+    return [name for name, idx in sorted(classes.items(), key=lambda item: item[1])]
+
+
+def get_training_namespace(config: dict, class_names: list[str]) -> str:
+    ns = str(config.get("training", {}).get("run_namespace", "")).strip()
+    if ns:
+        return ns
+    slug = "_".join(c.lower().replace(" ", "_") for c in class_names)
+    return f"classset_{slug}"
+
+
+def get_inference_namespace(config: dict, class_names: list[str]) -> str:
+    ns = str(config.get("inference", {}).get("model_run_namespace", "")).strip()
+    if ns:
+        return ns
+    return get_training_namespace(config, class_names)
+
+
+def read_candidate_class_names(best_model_path: Path):
+    """
+    Reads class names metadata from a training run directory when available.
+    """
+    run_dir = best_model_path.parent.parent
+    manifest_path = run_dir / "class_names.json"
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            names = payload.get("class_names")
+            if isinstance(names, list) and all(isinstance(n, str) for n in names):
+                return names
+        except Exception:
+            pass
+
+    # Backward compatibility for older runs.
+    args_yaml = run_dir / "args.yaml"
+    if args_yaml.exists():
+        try:
+            args_data = yaml.safe_load(args_yaml.read_text(encoding="utf-8")) or {}
+            data_path = args_data.get("data")
+            if data_path:
+                dataset_yaml_path = Path(str(data_path))
+                if dataset_yaml_path.exists():
+                    dataset_cfg = yaml.safe_load(dataset_yaml_path.read_text(encoding="utf-8")) or {}
+                    names = dataset_cfg.get("names")
+                    if isinstance(names, list) and all(isinstance(n, str) for n in names):
+                        return names
+        except Exception:
+            pass
+    return None
+
+
+def find_latest_best_model(model_dir: Path, expected_class_names: list[str] | None = None):
     """
     Finds the most recently modified best.pt under the model output directory.
+    If expected_class_names is provided, prefers runs whose class names match exactly.
     """
     if not model_dir.exists():
         return None
-    candidates = list(model_dir.rglob("best.pt"))
+    candidates = sorted(model_dir.rglob("best.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    if not expected_class_names:
+        return candidates[0]
+
+    expected = [str(x).strip() for x in expected_class_names]
+    for candidate in candidates:
+        candidate_names = read_candidate_class_names(candidate)
+        if candidate_names is not None and [str(x).strip() for x in candidate_names] == expected:
+            return candidate
+    return None
 
 
 def collect_target_slides(config: dict, include_annotated: bool = False):
@@ -212,7 +275,9 @@ def process_single_wsi_inference(
     config: dict,
     logger,
     batch_size_override: int | None = None,
-    force: bool = False
+    force: bool = False,
+    model_class_names: list[str] | None = None,
+    model_source_path: str | None = None,
 ):
     """
     Runs inference on a single WSI by breaking it into patches.
@@ -258,6 +323,13 @@ def process_single_wsi_inference(
     slide_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Raw prediction files will be saved to: {slide_output_dir}")
     detections_path = slide_output_dir / "detections.jsonl"
+    class_names_meta_path = slide_output_dir / "class_names.json"
+    if model_class_names:
+        meta = {
+            "class_names": model_class_names,
+            "model_source_path": model_source_path or "",
+        }
+        class_names_meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     # Check if this slide has already been completed
     completion_marker = slide_output_dir / ".completed"
@@ -485,9 +557,19 @@ def main():
             logger.info("No unannotated WSIs found to process. All slides appear to have a corresponding GeoJSON file.")
         return
 
-    # 1. Load the latest trained YOLO model from model_output_dir
-    model_dir = Path(config['paths']['model_output_dir'])
-    latest_model_path = find_latest_best_model(model_dir)
+    # 1. Load the latest trained YOLO model from namespaced model_output_dir
+    expected_class_names = get_config_class_names(config)
+    model_namespace = get_inference_namespace(config, expected_class_names)
+    model_dir = Path(config['paths']['model_output_dir']) / model_namespace
+    if not model_dir.exists():
+        logger.warning(f"Namespaced model directory not found: {model_dir}. Falling back to root model_output_dir.")
+        model_dir = Path(config['paths']['model_output_dir'])
+
+    latest_model_path = find_latest_best_model(model_dir, expected_class_names=expected_class_names)
+    if latest_model_path is None:
+        # Fall back to generic search if no class-matched run is found.
+        latest_model_path = find_latest_best_model(model_dir, expected_class_names=None)
+
     if latest_model_path is None:
         configured_model_path = Path(config['inference']['model_checkpoint'])
         if configured_model_path.exists():
@@ -505,6 +587,20 @@ def main():
         from ultralytics import YOLO
         logger.info(f"Loading latest trained model from: {latest_model_path}")
         model = YOLO(latest_model_path)
+        model_names_map = getattr(model, "names", {})
+        if isinstance(model_names_map, dict):
+            model_class_names = [model_names_map[i] for i in sorted(model_names_map.keys())]
+        elif isinstance(model_names_map, list):
+            model_class_names = [str(x) for x in model_names_map]
+        else:
+            model_class_names = []
+        if model_class_names and model_class_names != expected_class_names:
+            logger.critical(
+                "Class-name mismatch between loaded model and current config. "
+                f"Model names={model_class_names}, config names={expected_class_names}. "
+                "Aborting inference to avoid swapped labels."
+            )
+            return
     except Exception as e:
         logger.critical(f"Failed to load YOLO model. Error: {e}", exc_info=True)
         return
@@ -530,7 +626,9 @@ def main():
             config,
             logger,
             batch_size_override=args.batch_size,
-            force=args.force
+            force=args.force,
+            model_class_names=model_class_names,
+            model_source_path=str(latest_model_path)
         )
 
     logger.info("--- Inference Script Finished ---")
